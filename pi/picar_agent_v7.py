@@ -65,7 +65,7 @@ app.add_middleware(
 
 px = Picarx()
 
-# ── LiDAR (optional - starts gracefully if not connected) ─────────────────────
+# ── LiDAR (optional — starts gracefully if not connected) ─────────────────────
 lidar = None
 try:
     lidar = RPLidarC1(LIDAR_PORT, LIDAR_BAUDRATE)
@@ -88,7 +88,7 @@ state = {
     "grayscale":      [0, 0, 0],
     "cliff_detected": False,
     "obstacle_close": False,
-    "reflex_active":  False,   # True when reflex loop overrode a command
+    "reflex_active":  False,
 }
 
 # ── Cleanup handler ────────────────────────────────────────────────────────────
@@ -103,10 +103,7 @@ def cleanup(sig=None, frame=None):
         print(f"PiCar cleanup error: {e}")
     try:
         if lidar is not None:
-            lidar.stop()
-            lidar.stop_motor()
-            lidar.clean_input()
-            lidar.disconnect()
+            lidar.reset()
             print("LiDAR disconnected.")
     except Exception as e:
         print(f"LiDAR cleanup error: {e}")
@@ -126,47 +123,41 @@ print("Starting camera...")
 Vilib.camera_start(vflip=False, hflip=False)
 Vilib.display(local=False, web=True)
 time.sleep(2)
-print("Camera ready. Stream at http://192.168.1.225:9000/mjpg")
+print(f"Camera ready. Stream at http://{PI_IP}:{CAMERA_PORT}/mjpg")
 
 # ── Sensor polling thread (10Hz) ───────────────────────────────────────────────
 def sensor_worker():
     print("Sensor worker started.")
     while True:
         try:
-            # Read ultrasonic
             dist = px.ultrasonic.read()
-            if dist is not None and dist > 0:
+            if dist is not None and dist > 2:
                 state["ultrasonic_cm"] = round(float(dist), 1)
 
-            # Read grayscale
             gs = px.grayscale.read()
             if gs:
                 state["grayscale"] = gs
 
-            # Derive cliff and obstacle flags
             state["cliff_detected"] = any(v < CLIFF_STOP for v in state["grayscale"])
-            state["obstacle_close"] = state["ultrasonic_cm"] < ULTRASONIC_STOP
+            state["obstacle_close"] = 0 < state["ultrasonic_cm"] < ULTRASONIC_STOP
 
         except Exception as e:
             print(f"Sensor read error: {e}")
 
-        time.sleep(0.1)  # 10Hz
+        time.sleep(0.1)
 
 threading.Thread(target=sensor_worker, daemon=True).start()
 
 # ── Reflex safety loop (10Hz) ──────────────────────────────────────────────────
-# Runs independently of the navigator — overrides dangerous commands locally
 def reflex_worker():
     print("Reflex safety loop started.")
     while True:
         try:
             if state["mode"] == "autonomous":
-                cliff    = state["cliff_detected"]
-                obstacle = state["obstacle_close"]
-                us_cm    = state["ultrasonic_cm"]
+                cliff  = state["cliff_detected"]
+                us_cm  = state["ultrasonic_cm"]
 
                 if cliff:
-                    # Cliff detected — stop and back up slightly
                     px.stop()
                     state["speed"] = 0
                     state["reflex_active"] = True
@@ -176,15 +167,13 @@ def reflex_worker():
                     time.sleep(0.5)
                     px.stop()
 
-                elif us_cm < ULTRASONIC_STOP and us_cm > 0:
-                    # Obstacle too close — stop immediately
+                elif 0 < us_cm < ULTRASONIC_STOP:
                     px.stop()
                     state["speed"] = 0
                     state["reflex_active"] = True
                     print(f"REFLEX: Obstacle at {us_cm}cm — stopping.")
 
-                elif us_cm < ULTRASONIC_SLOW and us_cm > 0:
-                    # Getting close — reduce speed if going forward
+                elif 0 < us_cm < ULTRASONIC_SLOW:
                     if state["speed"] > 0:
                         reduced = min(state["speed"], 30)
                         px.forward(reduced)
@@ -197,49 +186,67 @@ def reflex_worker():
         except Exception as e:
             print(f"Reflex error: {e}")
 
-        time.sleep(0.1)  # 10Hz
+        time.sleep(0.1)
 
 threading.Thread(target=reflex_worker, daemon=True).start()
 
-# ── LiDAR background thread ────────────────────────────────────────────────────
+# ── LiDAR background thread (rplidarc1 async API) ─────────────────────────────
 def lidar_worker():
     if lidar is None:
         print("LiDAR worker skipped — no sensor connected.")
         return
 
-    while True:
-        try:
-            print("Initializing LiDAR...")
-            lidar.stop()
-            lidar.stop_motor()
-            time.sleep(2)
-            lidar.clean_input()
-            time.sleep(1)
-            lidar.start_motor()
-            time.sleep(3)
-            print("LiDAR ready, starting scan...")
-            state["lidar_ok"] = True
+    async def scan_loop():
+        print("LiDAR C1 scan loop starting...")
 
+        async def process_queue(q, stop):
             current_scan = []
-            for measure in lidar.iter_measures(scan_type='normal', max_buf_meas=5000):
-                new_scan, quality, angle, distance = measure
+            last_angle   = -1
 
-                if new_scan and current_scan:
-                    state["lidar_scan"] = current_scan
-                    current_scan = []
+            while not stop.is_set():
+                try:
+                    item = q.get_nowait()
+                    angle = item.get('a_deg')
+                    dist  = item.get('d_mm')
 
-                if distance > 0:
+                    if angle is None or dist is None:
+                        continue
+                    if dist <= 0 or dist > MAX_DIST_MM:
+                        continue
+
+                    # Detect scan boundary by angle wraparound
+                    if last_angle > 300 and angle < 60 and current_scan:
+                        state["lidar_scan"] = current_scan
+                        state["lidar_ok"]   = True
+                        current_scan = []
+
                     current_scan.append({
                         "angle":    round(angle, 1),
-                        "distance": round(distance, 1)
+                        "distance": round(dist, 1)
                     })
+                    last_angle = angle
 
+                except Exception:
+                    await asyncio.sleep(0.001)
+
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(lidar.simple_scan())
+            tg.create_task(process_queue(lidar.output_queue, lidar.stop_event))
+
+    while True:
+        try:
+            print("Initializing LiDAR C1...")
+            try:
+                lidar.reset()
+            except Exception:
+                pass
+            time.sleep(3)
+            asyncio.run(scan_loop())
         except Exception as e:
             print(f"LiDAR error: {e}, retrying in 3s...")
             state["lidar_ok"] = False
             try:
-                lidar.stop()
-                lidar.stop_motor()
+                lidar.reset()
             except Exception:
                 pass
             time.sleep(3)
@@ -248,9 +255,9 @@ threading.Thread(target=lidar_worker, daemon=True).start()
 
 # ── Helper: safe drive (respects reflex overrides) ────────────────────────────
 def safe_drive(speed: int, angle: int):
-    """Apply drive command only if reflex loop isn't actively blocking."""
+    """Apply drive command only if reflex loop is not actively blocking."""
     if state["reflex_active"]:
-        return  # Reflex has control, ignore navigator command
+        return
     speed = max(-100, min(100, speed))
     angle = max(-40,  min(40,  angle + STEERING_TRIM))
     state["speed"] = speed
@@ -272,7 +279,7 @@ def get_status():
         "angle":          state["angle"],
         "lidar_ok":       state["lidar_ok"],
         "lidar_points":   len(state["lidar_scan"]),
-        "stream_url":     "http://192.168.1.225:9000/mjpg",
+        "stream_url":     f"http://{PI_IP}:{CAMERA_PORT}/mjpg",
         "cliff_detected": state["cliff_detected"],
         "obstacle_close": state["obstacle_close"],
         "reflex_active":  state["reflex_active"],
@@ -283,11 +290,10 @@ def get_sensors():
     """Raw sensor readings for the navigator on Fedora."""
     scan = state["lidar_scan"]
 
-    # Pre-compute quadrant minimums for navigator convenience
     front = [m for m in scan if 315 <= m["angle"] <= 360 or 0  <= m["angle"] <= 45]
-    left  = [m for m in scan if 45  <  m["angle"] <= 135]
+    left  = [m for m in scan if 225 <  m["angle"] <  315]
     back  = [m for m in scan if 135 <  m["angle"] <= 225]
-    right = [m for m in scan if 225 <  m["angle"] <  315]
+    right = [m for m in scan if 45  <  m["angle"] <= 135]
 
     def closest(measures):
         return round(min((m["distance"] for m in measures), default=0), 1)
@@ -318,9 +324,9 @@ def get_lidar_summary():
         return {"status": "no_data", "points": 0}
 
     front = [m for m in scan if 315 <= m["angle"] <= 360 or 0  <= m["angle"] <= 45]
-    left  = [m for m in scan if 45  <  m["angle"] <= 135]
+    left  = [m for m in scan if 225 <  m["angle"] <  315]
     back  = [m for m in scan if 135 <  m["angle"] <= 225]
-    right = [m for m in scan if 225 <  m["angle"] <  315]
+    right = [m for m in scan if 45  <  m["angle"] <= 135]
 
     def closest(measures):
         return round(min((m["distance"] for m in measures), default=0), 1)
@@ -346,17 +352,16 @@ def set_mode(mode: str):
             state["speed"] = 0
             state["angle"] = 0
             state["reflex_active"] = False
-            print(f"Mode set to MANUAL.")
+            print("Mode set to MANUAL.")
         else:
-            print(f"Mode set to AUTONOMOUS.")
+            print("Mode set to AUTONOMOUS.")
     return {"mode": state["mode"]}
 
 @app.post("/api/drive")
 def drive(speed: int = 0, angle: int = 0):
     if state["mode"] == "manual":
-        # Manual mode — direct control, bypass safe_drive
         speed = max(-100, min(100, speed))
-        angle = max(-40,  min(40,  angle))
+        angle = max(-40,  min(40,  angle + STEERING_TRIM))
         state["speed"] = speed
         state["angle"] = angle
         px.set_dir_servo_angle(angle)
@@ -367,7 +372,6 @@ def drive(speed: int = 0, angle: int = 0):
         else:
             px.stop()
     elif state["mode"] == "autonomous":
-        # Autonomous mode — go through safe_drive (respects reflex)
         safe_drive(speed, angle)
     return {"speed": state["speed"], "angle": state["angle"]}
 
