@@ -38,6 +38,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from picarx import Picarx
 from vilib import Vilib
 from rplidarc1 import RPLidar as RPLidarC1
+from robot_hat import ADC
 import asyncio
 import subprocess
 import threading
@@ -65,6 +66,14 @@ app.add_middleware(
 
 px = Picarx()
 
+# ── Battery monitor ────────────────────────────────────────────────────────────
+try:
+    battery_adc = ADC('A4')
+    print("Battery monitor initialized.")
+except Exception as e:
+    battery_adc = None
+    print(f"Battery monitor not available: {e}")
+
 # ── LiDAR (optional — starts gracefully if not connected) ─────────────────────
 lidar = None
 try:
@@ -89,6 +98,8 @@ state = {
     "cliff_detected": False,
     "obstacle_close": False,
     "reflex_active":  False,
+    "battery_v": 0.0,
+    "battery_pct": 0,
 }
 
 # ── Cleanup handler ────────────────────────────────────────────────────────────
@@ -144,6 +155,16 @@ def sensor_worker():
         except Exception as e:
             print(f"Sensor read error: {e}")
 
+        if battery_adc is not None:
+            try:
+                raw = battery_adc.read_voltage()
+                volts = round(raw * 3, 2)
+                # 2S LiPo: 8.4V=100%, 6.8V=0%
+                pct = int(max(0, min(100, (volts - 6.8) / (8.4 - 6.8) * 100)))
+                state["battery_v"]   = volts
+                state["battery_pct"] = pct
+            except Exception:
+                pass
         time.sleep(0.1)
 
 threading.Thread(target=sensor_worker, daemon=True).start()
@@ -283,6 +304,8 @@ def get_status():
         "cliff_detected": state["cliff_detected"],
         "obstacle_close": state["obstacle_close"],
         "reflex_active":  state["reflex_active"],
+        "battery_v":      state["battery_v"],
+        "battery_pct":    state["battery_pct"],        
     }
 
 @app.get("/api/sensors")
@@ -311,6 +334,24 @@ def get_sensors():
             "back":   closest(back),
             "right":  closest(right),
         }
+    }
+
+@app.get("/api/battery")
+def get_battery():
+    v   = state["battery_v"]
+    pct = state["battery_pct"]
+    if v < 6.8:
+        status = "critical"
+    elif v < 7.0:
+        status = "low"
+    elif v < 7.4:
+        status = "medium"
+    else:
+        status = "good"
+    return {
+        "voltage":    v,
+        "percent":    pct,
+        "status":     status
     }
 
 @app.get("/api/lidar")
