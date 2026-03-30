@@ -599,6 +599,57 @@
         grid-row: auto;
       }
     }
+
+    /* ── Battery indicator ────────────────────────────────────────── */
+    .battery-indicator {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    .battery-shell {
+      width: 36px;
+      height: 16px;
+      border: 1px solid var(--text-secondary);
+      border-radius: 2px;
+      position: relative;
+      padding: 2px;
+    }
+
+    .battery-shell::after {
+      content: '';
+      position: absolute;
+      right: -5px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 4px;
+      height: 8px;
+      background: var(--text-secondary);
+      border-radius: 0 2px 2px 0;
+    }
+
+    .battery-fill {
+      height: 100%;
+      border-radius: 1px;
+      transition: width 0.5s, background 0.5s;
+    }
+
+    .battery-fill.good     { background: var(--green); }
+    .battery-fill.medium   { background: var(--amber); }
+    .battery-fill.low      { background: var(--red);   animation: pulse 1s infinite; }
+    .battery-fill.critical { background: var(--red);   animation: pulse 0.4s infinite; }
+
+    .battery-text {
+      font-family: var(--font-mono);
+      font-size: 0.6rem;
+      color: var(--text-secondary);
+    }
+
+    .battery-text.low,
+    .battery-text.critical {
+      color: var(--red);
+    }
   </style>
 </head>
 <body>
@@ -616,6 +667,12 @@
         <span class="status-dot" id="status-dot"></span>
         <span id="status-text">CONNECTING...</span>
       </div>
+      <div class="battery-indicator" id="battery-indicator">
+        <div class="battery-shell">
+          <div class="battery-fill good" id="battery-fill" style="width:100%"></div>
+        </div>
+        <span class="battery-text" id="battery-text">--.-V</span>
+      </div>
       <div id="clock" style="margin-top:2px;"></div>
     </div>
   </header>
@@ -632,14 +689,14 @@
       <div class="camera-container">
         <img
           id="camera-feed"
-          src="http://YOUR_PI_IP:9000/mjpg"
+          src="http://192.168.1.225:9000/mjpg"
           alt="Camera Feed"
           onerror="this.style.display='none'; document.getElementById('no-signal').style.display='flex';"
           onload="document.getElementById('no-signal').style.display='none'; this.style.display='block';"
         />
         <div id="no-signal" class="camera-no-signal" style="display:none;">
           <span>◈ NO SIGNAL ◈</span>
-          <span style="color:var(--text-dim);">YOUR_PI_IP:9000</span>
+          <span style="color:var(--text-dim);">192.168.1.225:9000</span>
         </div>
         <div class="camera-overlay">
           <div class="camera-overlay-tl">
@@ -766,7 +823,7 @@
           <span class="panel-badge">1Hz POLL</span>
         </div>
         <div class="telemetry-grid"
-          hx-get="http://YOUR_PI_IP:8000/api/status"
+          hx-get="http://192.168.1.225:8000/api/status"
           hx-trigger="every 1s"
           hx-swap="none"
           hx-on::after-request="updateTelemetry(event)">
@@ -794,13 +851,13 @@
 
   <!-- ── Footer ──────────────────────────────────────────────────── -->
   <footer>
-    <div class="footer-text">PICAR-X MISSION CONTROL · v1.0 · YOUR_PI_IP</div>
+    <div class="footer-text">PICAR-X MISSION CONTROL · v1.0 · 192.168.1.225</div>
     <div class="footer-text" id="last-update">LAST UPDATE: --:--:--</div>
   </footer>
 
   <script>
     // ── Config ──────────────────────────────────────────────────────
-    const AGENT_URL  = 'http://YOUR_PI_IP:8000';
+    const AGENT_URL  = 'http://192.168.1.225:8000';
     const ANGLE_STEP = 30;  // degrees per keypress
 
     let currentSpeed = 50;
@@ -1130,6 +1187,45 @@
         case 'a': case 'd': stopAxis('angle'); break;
       }
     });
+
+
+    // ── Battery polling ─────────────────────────────────────────────
+    async function pollBattery() {
+      try {
+        const res  = await fetch(`${AGENT_URL}/api/battery`);
+        const data = await res.json();
+
+        const pct    = data.percent || 0;
+        const volts  = data.voltage ? data.voltage.toFixed(2) : '--.-';
+        const status = data.status  || 'good';
+
+        // Update fill bar
+        const fill = document.getElementById('battery-fill');
+        fill.style.width = `${pct}%`;
+        fill.className   = `battery-fill ${status}`;
+
+        // Update text
+        const text = document.getElementById('battery-text');
+        text.textContent = `${volts}V`;
+        text.className   = `battery-text ${status}`;
+
+        // Show warning in title if low
+        if (status === 'critical') {
+          document.title = '⚠ LOW BATTERY — PiCar-X Mission Control';
+        } else if (status === 'low') {
+          document.title = '🔋 PiCar-X Mission Control';
+        } else {
+          document.title = 'PiCar-X Mission Control';
+        }
+
+      } catch(e) {
+        // Battery endpoint not available
+      }
+    }
+
+    // Poll battery every 30 seconds
+    setInterval(pollBattery, 30000);
+    pollBattery();  // poll immediately on load
 
     // ── Initial status check ────────────────────────────────────────
     fetch(`${AGENT_URL}/api/status`)
