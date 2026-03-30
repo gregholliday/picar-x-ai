@@ -1,14 +1,44 @@
 #!/usr/bin/env python3
 
-# Patch os.getlogin for systemd service compatibility
+# ── Load config ───────────────────────────────────────────────────────────────
+import sys
 import os
-os.getlogin = lambda: "YOUR_USERNAME"
+
+# Look for config.py one directory up (repo root)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+try:
+    from config import (
+        PI_IP, PI_USERNAME, CAMERA_PORT, AGENT_PORT,
+        LIDAR_PORT, LIDAR_BAUDRATE,
+        ULTRASONIC_STOP, ULTRASONIC_SLOW,
+        CLIFF_STOP, CLIFF_WARN,
+        STEERING_TRIM,
+    )
+    print("Config loaded from config.py")
+except ImportError:
+    print("config.py not found — using defaults. Copy config.py to repo root and edit it.")
+    PI_IP            = "YOUR_PI_IP"
+    PI_USERNAME      = "pi"
+    CAMERA_PORT      = 9000
+    AGENT_PORT       = 8000
+    LIDAR_PORT       = "/dev/ttyUSB0"
+    LIDAR_BAUDRATE   = 460800
+    ULTRASONIC_STOP  = 15
+    ULTRASONIC_SLOW  = 30
+    CLIFF_STOP       = 100
+    CLIFF_WARN       = 500
+    STEERING_TRIM    = 0
+
+# Patch os.getlogin for systemd service compatibility
+os.getlogin = lambda: PI_USERNAME
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from picarx import Picarx
 from vilib import Vilib
-from rplidar import RPLidar
+from rplidarc1 import RPLidar as RPLidarC1
+import asyncio
 import subprocess
 import threading
 import signal
@@ -35,22 +65,17 @@ app.add_middleware(
 
 px = Picarx()
 
-# ── LiDAR (optional — starts gracefully if not connected) ─────────────────────
+# ── LiDAR (optional - starts gracefully if not connected) ─────────────────────
 lidar = None
 try:
-    lidar = RPLidar('/dev/ttyUSB0', baudrate=460800, timeout=3)
-    print("LiDAR connected on /dev/ttyUSB0.")
+    lidar = RPLidarC1(LIDAR_PORT, LIDAR_BAUDRATE)
+    print(f"LiDAR C1 connected on {LIDAR_PORT}.")
 except Exception as e:
     print(f"LiDAR not available: {e}")
     print("Starting without LiDAR — connect sensor to enable.")
 
-# ── Thresholds ─────────────────────────────────────────────────────────────────
-ULTRASONIC_STOP    = 15    # cm  — emergency stop
-ULTRASONIC_SLOW    = 30    # cm  — slow down
-CLIFF_STOP         = 100   # ADC — cliff detected, stop immediately
-CLIFF_WARN         = 500   # ADC — near edge, slow down
-MAX_DIST_MM        = 6000  # mm  — LiDAR clip distance
-STEERING_TRIM      = -2    # degrees — negative = left correction. Adjust until car goes straght
+# ── Constants ──────────────────────────────────────────────────────────────────
+MAX_DIST_MM = 6000  # mm — LiDAR clip distance
 
 # ── Shared state ───────────────────────────────────────────────────────────────
 state = {
@@ -101,7 +126,7 @@ print("Starting camera...")
 Vilib.camera_start(vflip=False, hflip=False)
 Vilib.display(local=False, web=True)
 time.sleep(2)
-print("Camera ready. Stream at http://YOUR_PI_IP:9000/mjpg")
+print("Camera ready. Stream at http://192.168.1.225:9000/mjpg")
 
 # ── Sensor polling thread (10Hz) ───────────────────────────────────────────────
 def sensor_worker():
@@ -247,7 +272,7 @@ def get_status():
         "angle":          state["angle"],
         "lidar_ok":       state["lidar_ok"],
         "lidar_points":   len(state["lidar_scan"]),
-        "stream_url":     "http://YOUR_PI_IP:9000/mjpg",
+        "stream_url":     "http://192.168.1.225:9000/mjpg",
         "cliff_detected": state["cliff_detected"],
         "obstacle_close": state["obstacle_close"],
         "reflex_active":  state["reflex_active"],
@@ -331,7 +356,7 @@ def drive(speed: int = 0, angle: int = 0):
     if state["mode"] == "manual":
         # Manual mode — direct control, bypass safe_drive
         speed = max(-100, min(100, speed))
-        angle = max(-40,  min(40,  angle + STEERING_TRIM))
+        angle = max(-40,  min(40,  angle))
         state["speed"] = speed
         state["angle"] = angle
         px.set_dir_servo_angle(angle)

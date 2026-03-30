@@ -16,21 +16,34 @@ import requests
 import time
 import math
 import json
+import sys
+import os
 from datetime import datetime
 from collections import deque
 
-# ── Config ─────────────────────────────────────────────────────────────────────
-AGENT_URL     = "http://YOUR_PI_IP:8000"
-POLL_INTERVAL = 0.4    # seconds between navigator decisions
-BASE_SPEED    = 40     # normal cruising speed
-SLOW_SPEED    = 25     # speed when navigating around obstacles
-TURN_ANGLE    = 35     # degrees for turns
+# ── Load config ────────────────────────────────────────────────────────────────
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Distance thresholds (mm) for navigation decisions
-# Note: Pi reflex loop handles emergency stops below these values
-FRONT_CLEAR   = 600    # mm — path is clear, drive forward
-FRONT_CAUTION = 350    # mm — slow down, start planning turn
-SIDE_CLEAR    = 300    # mm — side is clear enough to turn into
+try:
+    from config import (
+        PI_IP, AGENT_PORT,
+        BASE_SPEED, SLOW_SPEED, TURN_ANGLE,
+        FRONT_CLEAR, FRONT_CAUTION, SIDE_CLEAR,
+        OLLAMA_IP, OLLAMA_PORT, OLLAMA_MODEL,
+    )
+    AGENT_URL = f"http://{PI_IP}:{AGENT_PORT}"
+    print(f"Config loaded from config.py. Agent URL: {AGENT_URL}")
+except ImportError:
+    print("config.py not found — using defaults. Copy config.py to repo root and edit it.")
+    AGENT_URL     = "http://YOUR_PI_IP:8000"
+    BASE_SPEED    = 40
+    SLOW_SPEED    = 25
+    TURN_ANGLE    = 35
+    FRONT_CLEAR   = 600
+    FRONT_CAUTION = 350
+    SIDE_CLEAR    = 300
+
+POLL_INTERVAL = 0.4    # seconds between navigator decisions
 
 # ── Room map ───────────────────────────────────────────────────────────────────
 # Simple occupancy grid — tracks where obstacles have been seen

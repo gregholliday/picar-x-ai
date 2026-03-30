@@ -1,6 +1,6 @@
 # ── PiCar-X AI Configuration ──────────────────────────────────────────────────
 # Edit this file to match your setup before running the agent or navigator.
-# The Pi IP and username are the two most important settings.
+# This is the only file you need to edit for basic configuration.
 
 # ── Network ────────────────────────────────────────────────────────────────────
 PI_IP        = "YOUR_PI_IP"       # IP address of your Raspberry Pi
@@ -19,6 +19,13 @@ CAMERA_PORT  = 9000
 # ── LiDAR Settings ─────────────────────────────────────────────────────────────
 LIDAR_PORT     = "/dev/ttyUSB0"
 LIDAR_BAUDRATE = 460800
+
+# ── Steering Trim ──────────────────────────────────────────────────────────────
+# If the car drifts left or right when driving straight, adjust this value.
+# Negative = corrects rightward drift (turns wheels slightly left)
+# Positive = corrects leftward drift (turns wheels slightly right)
+# Start with small values (-1, -2, -3) and test until the car drives straight.
+STEERING_TRIM = 0
 
 # ── Safety Thresholds ──────────────────────────────────────────────────────────
 # Ultrasonic sensor (cm)
@@ -44,4 +51,5 @@ SIDE_CLEAR    = 300     # Minimum side clearance for turns
 
 # ── LiDAR Orientation ──────────────────────────────────────────────────────────
 # If left/right readings are swapped, set this to True
+# Test: place object on RIGHT side, check if 'right' value is small
 LIDAR_SWAP_LR = False
