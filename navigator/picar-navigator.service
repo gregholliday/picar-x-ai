@@ -1,0 +1,18 @@
+[Unit]
+Description=PiCar-X Navigator
+After=network.target
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_USERNAME
+Group=YOUR_USERNAME
+WorkingDirectory=YOUR_REPO_PATH
+ExecStart=/usr/bin/python3 YOUR_REPO_PATH/navigator/picar_navigator.py
+Restart=on-failure
+RestartSec=10
+ExecStartPre=/bin/sleep 15
+
+[Install]
+WantedBy=multi-user.target
