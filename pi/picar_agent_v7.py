@@ -50,6 +50,7 @@ ULTRASONIC_SLOW    = 30    # cm  — slow down
 CLIFF_STOP         = 100   # ADC — cliff detected, stop immediately
 CLIFF_WARN         = 500   # ADC — near edge, slow down
 MAX_DIST_MM        = 6000  # mm  — LiDAR clip distance
+STEERING_TRIM      = -2    # degrees — negative = left correction. Adjust until car goes straght
 
 # ── Shared state ───────────────────────────────────────────────────────────────
 state = {
@@ -226,7 +227,7 @@ def safe_drive(speed: int, angle: int):
     if state["reflex_active"]:
         return  # Reflex has control, ignore navigator command
     speed = max(-100, min(100, speed))
-    angle = max(-40,  min(40,  angle))
+    angle = max(-40,  min(40,  angle + STEERING_TRIM))
     state["speed"] = speed
     state["angle"] = angle
     px.set_dir_servo_angle(angle)
@@ -330,7 +331,7 @@ def drive(speed: int = 0, angle: int = 0):
     if state["mode"] == "manual":
         # Manual mode — direct control, bypass safe_drive
         speed = max(-100, min(100, speed))
-        angle = max(-40,  min(40,  angle))
+        angle = max(-40,  min(40,  angle + STEERING_TRIM))
         state["speed"] = speed
         state["angle"] = angle
         px.set_dir_servo_angle(angle)
