@@ -1,0 +1,18 @@
+[Unit]
+Description=PiCar-X Agent
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/picar-x-ai/pi
+Environment=LOGNAME=pi
+Environment=HOME=/home/pi
+Environment=USER=pi
+ExecStart=/usr/bin/python3 /home/pi/picar-x-ai/pi/picar_agent_v7.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,1146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PiCar-X Mission Control</title>
+
+  <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&family=Exo+2:wght@300;400;600&display=swap" rel="stylesheet" />
+
+  <style>
+    /* ── CSS Variables ────────────────────────────────────────────── */
+    :root {
+      --bg-base:        #0a0c0f;
+      --bg-panel:       #0f1318;
+      --bg-panel-2:     #141820;
+      --bg-highlight:   #1a2030;
+      --border:         #1e2a3a;
+      --border-bright:  #2a3f55;
+      --amber:          #f59e0b;
+      --amber-dim:      #92610a;
+      --cyan:           #00d4ff;
+      --cyan-dim:       #005570;
+      --green:          #22c55e;
+      --green-dim:      #14532d;
+      --red:            #ef4444;
+      --red-dim:        #7f1d1d;
+      --text-primary:   #e2e8f0;
+      --text-secondary: #64748b;
+      --text-dim:       #334155;
+      --font-mono:      'Share Tech Mono', monospace;
+      --font-display:   'Orbitron', sans-serif;
+      --font-body:      'Exo 2', sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg-base);
+      color: var(--text-primary);
+      font-family: var(--font-body);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* Scanline overlay */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0,0,0,0.08) 2px,
+        rgba(0,0,0,0.08) 4px
+      );
+      pointer-events: none;
+      z-index: 1000;
+    }
+
+    /* ── Header ───────────────────────────────────────────────────── */
+    header {
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: relative;
+    }
+
+    header::after {
+      content: '';
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+      opacity: 0.4;
+    }
+
+    .header-title {
+      font-family: var(--font-display);
+      font-size: 1.1rem;
+      font-weight: 900;
+      letter-spacing: 0.2em;
+      color: var(--cyan);
+      text-shadow: 0 0 20px rgba(0, 212, 255, 0.4);
+    }
+
+    .header-title span {
+      color: var(--amber);
+    }
+
+    .header-meta {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--text-secondary);
+      text-align: right;
+      line-height: 1.6;
+    }
+
+    .status-dot {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 8px var(--green);
+      animation: pulse 2s infinite;
+      margin-right: 6px;
+    }
+
+    .status-dot.offline {
+      background: var(--red);
+      box-shadow: 0 0 8px var(--red);
+      animation: none;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.4; }
+    }
+
+    /* ── Main Layout ──────────────────────────────────────────────── */
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1fr 400px;
+      grid-template-rows: auto auto;
+      gap: 12px;
+      padding: 12px;
+      width: 100%;
+    }
+
+    /* ── Panels ───────────────────────────────────────────────────── */
+    .panel {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .panel::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--cyan-dim), var(--cyan), var(--cyan-dim));
+    }
+
+    .panel-header {
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--bg-panel-2);
+    }
+
+    .panel-title {
+      font-family: var(--font-display);
+      font-size: 0.6rem;
+      font-weight: 700;
+      letter-spacing: 0.15em;
+      color: var(--cyan);
+    }
+
+    .panel-badge {
+      font-family: var(--font-mono);
+      font-size: 0.6rem;
+      color: var(--text-secondary);
+    }
+
+    /* ── Camera Feed ──────────────────────────────────────────────── */
+    .camera-panel {
+      grid-column: 1;
+      grid-row: 1;
+    }
+
+    .camera-container {
+      position: relative;
+      background: #000;
+      height: 560px;
+      overflow: hidden;
+    }
+
+    .camera-container img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    /* Corner brackets */
+    .camera-container::before,
+    .camera-container::after {
+      content: '';
+      position: absolute;
+      width: 24px; height: 24px;
+      z-index: 10;
+    }
+    .camera-container::before {
+      top: 8px; left: 8px;
+      border-top: 2px solid var(--cyan);
+      border-left: 2px solid var(--cyan);
+    }
+    .camera-container::after {
+      bottom: 8px; right: 8px;
+      border-bottom: 2px solid var(--cyan);
+      border-right: 2px solid var(--cyan);
+    }
+
+    .camera-overlay {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    .camera-overlay-tl {
+      position: absolute;
+      top: 12px; left: 12px;
+      font-family: var(--font-mono);
+      font-size: 0.65rem;
+      color: var(--cyan);
+      text-shadow: 0 0 8px var(--cyan);
+      line-height: 1.6;
+    }
+
+    .camera-overlay-br {
+      position: absolute;
+      bottom: 12px; right: 12px;
+      font-family: var(--font-mono);
+      font-size: 0.65rem;
+      color: var(--amber);
+      text-shadow: 0 0 8px var(--amber);
+      text-align: right;
+      line-height: 1.6;
+    }
+
+    .camera-crosshair {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      width: 30px; height: 30px;
+    }
+
+    .camera-crosshair::before,
+    .camera-crosshair::after {
+      content: '';
+      position: absolute;
+      background: rgba(0, 212, 255, 0.4);
+    }
+    .camera-crosshair::before {
+      width: 1px; height: 100%;
+      left: 50%; top: 0;
+    }
+    .camera-crosshair::after {
+      width: 100%; height: 1px;
+      top: 50%; left: 0;
+    }
+
+    .camera-no-signal {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      background: repeating-linear-gradient(
+        45deg,
+        #0a0a0a,
+        #0a0a0a 4px,
+        #111 4px,
+        #111 8px
+      );
+    }
+
+    .camera-no-signal span {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      letter-spacing: 0.1em;
+    }
+
+    /* ── LiDAR Panel ──────────────────────────────────────────────── */
+    .lidar-panel {
+      grid-column: 1;
+      grid-row: 2;
+    }
+
+    .lidar-container {
+      padding: 12px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+
+    #lidar-canvas {
+      background: #000;
+      border: 1px solid var(--border);
+      border-radius: 50%;
+      flex-shrink: 0;
+      width: 280px;
+      height: 280px;
+    }
+
+    .lidar-stats {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .lidar-quadrant {
+      background: var(--bg-panel-2);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 8px;
+      text-align: center;
+    }
+
+    .lidar-quadrant-label {
+      font-family: var(--font-mono);
+      font-size: 0.6rem;
+      color: var(--text-secondary);
+      letter-spacing: 0.1em;
+      margin-bottom: 4px;
+    }
+
+    .lidar-quadrant-value {
+      font-family: var(--font-mono);
+      font-size: 1.1rem;
+      font-weight: bold;
+    }
+
+    .lidar-quadrant-value.safe   { color: var(--green); }
+    .lidar-quadrant-value.warn   { color: var(--amber); }
+    .lidar-quadrant-value.danger { color: var(--red); }
+    .lidar-quadrant-unit {
+      font-family: var(--font-mono);
+      font-size: 0.6rem;
+      color: var(--text-secondary);
+    }
+
+    /* ── Right Column ─────────────────────────────────────────────── */
+    .right-column {
+      grid-column: 2;
+      grid-row: 1 / 3;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    /* ── Mode Toggle ──────────────────────────────────────────────── */
+    .mode-display {
+      padding: 16px;
+      text-align: center;
+    }
+
+    .mode-label {
+      font-family: var(--font-mono);
+      font-size: 0.6rem;
+      color: var(--text-secondary);
+      letter-spacing: 0.15em;
+      margin-bottom: 8px;
+    }
+
+    .mode-value {
+      font-family: var(--font-display);
+      font-size: 1.2rem;
+      font-weight: 900;
+      letter-spacing: 0.2em;
+      margin-bottom: 16px;
+    }
+
+    .mode-value.manual     { color: var(--amber); text-shadow: 0 0 20px rgba(245,158,11,0.4); }
+    .mode-value.autonomous { color: var(--green); text-shadow: 0 0 20px rgba(34,197,94,0.4); }
+
+    .mode-buttons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .btn {
+      font-family: var(--font-display);
+      font-size: 0.55rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      padding: 10px 8px;
+      border: 1px solid;
+      border-radius: 3px;
+      cursor: pointer;
+      transition: all 0.15s;
+      text-transform: uppercase;
+      background: transparent;
+    }
+
+    .btn-manual {
+      border-color: var(--amber-dim);
+      color: var(--amber);
+    }
+    .btn-manual:hover, .btn-manual.active {
+      background: rgba(245,158,11,0.15);
+      border-color: var(--amber);
+      box-shadow: 0 0 12px rgba(245,158,11,0.2);
+    }
+
+    .btn-auto {
+      border-color: var(--green-dim);
+      color: var(--green);
+    }
+    .btn-auto:hover, .btn-auto.active {
+      background: rgba(34,197,94,0.15);
+      border-color: var(--green);
+      box-shadow: 0 0 12px rgba(34,197,94,0.2);
+    }
+
+    .btn-stop {
+      grid-column: 1 / -1;
+      border-color: var(--red-dim);
+      color: var(--red);
+      font-size: 0.65rem;
+      padding: 12px;
+    }
+    .btn-stop:hover {
+      background: rgba(239,68,68,0.15);
+      border-color: var(--red);
+      box-shadow: 0 0 16px rgba(239,68,68,0.3);
+    }
+
+    /* ── Drive Controls ───────────────────────────────────────────── */
+    .controls-pad {
+      padding: 16px;
+    }
+
+    .controls-hint {
+      font-family: var(--font-mono);
+      font-size: 0.6rem;
+      color: var(--text-secondary);
+      text-align: center;
+      margin-bottom: 12px;
+      letter-spacing: 0.08em;
+    }
+
+    .dpad {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      grid-template-rows: repeat(3, 1fr);
+      gap: 6px;
+      width: 160px;
+      margin: 0 auto;
+    }
+
+    .dpad-btn {
+      aspect-ratio: 1;
+      background: var(--bg-panel-2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 1rem;
+      color: var(--text-secondary);
+      transition: all 0.1s;
+      user-select: none;
+      font-family: var(--font-mono);
+    }
+
+    .dpad-btn:hover, .dpad-btn.pressed {
+      background: var(--bg-highlight);
+      border-color: var(--cyan);
+      color: var(--cyan);
+      box-shadow: 0 0 10px rgba(0,212,255,0.2);
+    }
+
+    .dpad-btn.center {
+      background: rgba(239,68,68,0.1);
+      border-color: var(--red-dim);
+      color: var(--red);
+      font-size: 0.6rem;
+      letter-spacing: 0.05em;
+    }
+    .dpad-btn.center:hover {
+      background: rgba(239,68,68,0.2);
+      border-color: var(--red);
+    }
+
+    .dpad-btn.empty { visibility: hidden; }
+
+    .speed-control {
+      margin-top: 14px;
+    }
+
+    .speed-label {
+      font-family: var(--font-mono);
+      font-size: 0.6rem;
+      color: var(--text-secondary);
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 6px;
+    }
+
+    .speed-label span {
+      color: var(--amber);
+      font-size: 0.75rem;
+    }
+
+    input[type=range] {
+      width: 100%;
+      accent-color: var(--amber);
+      cursor: pointer;
+    }
+
+    /* ── Telemetry ────────────────────────────────────────────────── */
+    .telemetry-grid {
+      padding: 12px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .telem-item {
+      background: var(--bg-panel-2);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 8px 10px;
+    }
+
+    .telem-label {
+      font-family: var(--font-mono);
+      font-size: 0.55rem;
+      color: var(--text-secondary);
+      letter-spacing: 0.1em;
+      margin-bottom: 2px;
+    }
+
+    .telem-value {
+      font-family: var(--font-mono);
+      font-size: 1rem;
+      color: var(--cyan);
+    }
+
+    .telem-unit {
+      font-size: 0.6rem;
+      color: var(--text-secondary);
+    }
+
+    /* ── Footer ───────────────────────────────────────────────────── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 8px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: var(--bg-panel);
+    }
+
+    .footer-text {
+      font-family: var(--font-mono);
+      font-size: 0.6rem;
+      color: var(--text-dim);
+    }
+
+    /* ── Keyboard indicator ───────────────────────────────────────── */
+    .key-indicator {
+      display: inline-block;
+      background: var(--bg-panel-2);
+      border: 1px solid var(--border-bright);
+      border-bottom-width: 2px;
+      border-radius: 3px;
+      padding: 1px 5px;
+      font-family: var(--font-mono);
+      font-size: 0.6rem;
+      color: var(--text-secondary);
+    }
+
+    /* ── Animations ───────────────────────────────────────────────── */
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .panel {
+      animation: fadeIn 0.3s ease forwards;
+    }
+
+    /* ── Responsive ───────────────────────────────────────────────── */
+    @media (max-width: 900px) {
+      .main-grid {
+        grid-template-columns: 1fr;
+      }
+      .right-column {
+        grid-column: 1;
+        grid-row: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ── Header ──────────────────────────────────────────────────── -->
+  <header>
+    <div>
+      <div class="header-title">PICAR<span>-X</span> MISSION CONTROL</div>
+      <div style="font-family:var(--font-mono);font-size:0.6rem;color:var(--text-secondary);margin-top:2px;letter-spacing:0.08em;">
+        SUNFOUNDER · RPLiDAR C1M1 · OV5647
+      </div>
+    </div>
+    <div class="header-meta">
+      <div id="conn-status">
+        <span class="status-dot" id="status-dot"></span>
+        <span id="status-text">CONNECTING...</span>
+      </div>
+      <div id="clock" style="margin-top:2px;"></div>
+    </div>
+  </header>
+
+  <!-- ── Main Grid ───────────────────────────────────────────────── -->
+  <div class="main-grid">
+
+    <!-- Camera Feed -->
+    <div class="panel camera-panel">
+      <div class="panel-header">
+        <span class="panel-title">CAMERA FEED</span>
+        <span class="panel-badge">OV5647 · 640×480 · 30FPS</span>
+      </div>
+      <div class="camera-container">
+        <img
+          id="camera-feed"
+          src="http://YOUR_PI_IP:9000/mjpg"
+          alt="Camera Feed"
+          onerror="this.style.display='none'; document.getElementById('no-signal').style.display='flex';"
+          onload="document.getElementById('no-signal').style.display='none'; this.style.display='block';"
+        />
+        <div id="no-signal" class="camera-no-signal" style="display:none;">
+          <span>◈ NO SIGNAL ◈</span>
+          <span style="color:var(--text-dim);">YOUR_PI_IP:9000</span>
+        </div>
+        <div class="camera-overlay">
+          <div class="camera-overlay-tl">
+            <div>REC ●</div>
+            <div id="cam-time"></div>
+          </div>
+          <div class="camera-overlay-br">
+            <div>CAM · CH01</div>
+            <div>640×480</div>
+          </div>
+          <div class="camera-crosshair"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- LiDAR Panel -->
+    <div class="panel lidar-panel">
+      <div class="panel-header">
+        <span class="panel-title">LIDAR TELEMETRY</span>
+        <span class="panel-badge" id="lidar-points">AWAITING SENSOR</span>
+      </div>
+      <div class="lidar-container">
+        <canvas id="lidar-canvas" width="280" height="280"></canvas>
+        <div class="lidar-stats">
+          <div class="lidar-quadrant">
+            <div class="lidar-quadrant-label">▲ FRONT</div>
+            <div class="lidar-quadrant-value safe" id="dist-front">---</div>
+            <div class="lidar-quadrant-unit">mm</div>
+          </div>
+          <div class="lidar-quadrant">
+            <div class="lidar-quadrant-label">▶ RIGHT</div>
+            <div class="lidar-quadrant-value safe" id="dist-right">---</div>
+            <div class="lidar-quadrant-unit">mm</div>
+          </div>
+          <div class="lidar-quadrant">
+            <div class="lidar-quadrant-label">◀ LEFT</div>
+            <div class="lidar-quadrant-value safe" id="dist-left">---</div>
+            <div class="lidar-quadrant-unit">mm</div>
+          </div>
+          <div class="lidar-quadrant">
+            <div class="lidar-quadrant-label">▼ REAR</div>
+            <div class="lidar-quadrant-value safe" id="dist-back">---</div>
+            <div class="lidar-quadrant-unit">mm</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Column -->
+    <div class="right-column">
+
+      <!-- Mode Control -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">DRIVE MODE</span>
+          <span class="panel-badge">SYS · CTRL</span>
+        </div>
+        <div class="mode-display">
+          <div class="mode-label">CURRENT MODE</div>
+          <div class="mode-value manual" id="mode-display">MANUAL</div>
+          <div class="mode-buttons">
+            <button class="btn btn-manual active" id="btn-manual"
+              onclick="setMode('manual')">
+              ◈ MANUAL
+            </button>
+            <button class="btn btn-auto" id="btn-auto"
+              onclick="setMode('autonomous')">
+              ◉ AUTO
+            </button>
+            <button class="btn btn-stop" onclick="stopCar()">
+              ■ EMERGENCY STOP
+            </button>
+            <button class="btn" id="btn-shutdown"
+              style="grid-column:1/-1;border-color:#4a1942;color:#c084fc;font-size:0.55rem;padding:10px;"
+              onclick="shutdownPicar()">
+              ⏻ SHUTDOWN PICAR
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Drive Controls -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">DRIVE CONTROLS</span>
+          <span class="panel-badge">WASD · KEYBOARD</span>
+        </div>
+        <div class="controls-pad">
+          <div class="controls-hint">
+            <span class="key-indicator">W</span>
+            <span class="key-indicator">A</span>
+            <span class="key-indicator">S</span>
+            <span class="key-indicator">D</span>
+            &nbsp;or use the pad below
+          </div>
+
+          <div class="dpad">
+            <div class="dpad-btn empty"></div>
+            <div class="dpad-btn" id="btn-fwd"    onmousedown="startDrive(1,0)" onmouseup="stopAxis('speed')" ontouchstart="startDrive(1,0)" ontouchend="stopAxis('speed')">▲</div>
+            <div class="dpad-btn empty"></div>
+            <div class="dpad-btn" id="btn-left"   onmousedown="startDrive(0,-1)" onmouseup="stopAxis('angle')" ontouchstart="startDrive(0,-1)" ontouchend="stopAxis('angle')">◀</div>
+            <div class="dpad-btn center"           onmousedown="stopDrive()"      onclick="stopCar()">STOP</div>
+            <div class="dpad-btn" id="btn-right"  onmousedown="startDrive(0,1)" onmouseup="stopAxis('angle')" ontouchstart="startDrive(0,1)" ontouchend="stopAxis('angle')">▶</div>
+            <div class="dpad-btn empty"></div>
+            <div class="dpad-btn" id="btn-back"   onmousedown="startDrive(-1,0)" onmouseup="stopAxis('speed')" ontouchstart="startDrive(-1,0)" ontouchend="stopAxis('speed')">▼</div>
+            <div class="dpad-btn empty"></div>
+          </div>
+
+          <div class="speed-control">
+            <div class="speed-label">
+              <span>SPEED</span>
+              <span id="speed-display">50</span>
+            </div>
+            <input type="range" id="speed-slider" min="10" max="100" value="50"
+              oninput="document.getElementById('speed-display').textContent = this.value" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Telemetry -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">TELEMETRY</span>
+          <span class="panel-badge">1Hz POLL</span>
+        </div>
+        <div class="telemetry-grid"
+          hx-get="http://YOUR_PI_IP:8000/api/status"
+          hx-trigger="every 1s"
+          hx-swap="none"
+          hx-on::after-request="updateTelemetry(event)">
+          <div class="telem-item">
+            <div class="telem-label">SPEED</div>
+            <div class="telem-value"><span id="telem-speed">0</span><span class="telem-unit"> %</span></div>
+          </div>
+          <div class="telem-item">
+            <div class="telem-label">HEADING</div>
+            <div class="telem-value"><span id="telem-angle">0</span><span class="telem-unit"> °</span></div>
+          </div>
+          <div class="telem-item">
+            <div class="telem-label">MODE</div>
+            <div class="telem-value" style="font-size:0.75rem;" id="telem-mode">MANUAL</div>
+          </div>
+          <div class="telem-item">
+            <div class="telem-label">LIDAR PTS</div>
+            <div class="telem-value"><span id="telem-lidar">0</span></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ── Footer ──────────────────────────────────────────────────── -->
+  <footer>
+    <div class="footer-text">PICAR-X MISSION CONTROL · v1.0 · YOUR_PI_IP</div>
+    <div class="footer-text" id="last-update">LAST UPDATE: --:--:--</div>
+  </footer>
+
+  <script>
+    // ── Config ──────────────────────────────────────────────────────
+    const AGENT_URL  = 'http://YOUR_PI_IP:8000';
+    const ANGLE_STEP = 30;  // degrees per keypress
+
+    let currentSpeed = 50;
+    let driveInterval = null;
+    let isConnected = false;
+
+    // ── Clock ───────────────────────────────────────────────────────
+    function updateClock() {
+      const now = new Date();
+      const t = now.toTimeString().slice(0,8);
+      document.getElementById('clock').textContent = t;
+      document.getElementById('cam-time').textContent = t;
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    // ── Connection status ───────────────────────────────────────────
+    function setConnected(connected) {
+      isConnected = connected;
+      const dot  = document.getElementById('status-dot');
+      const text = document.getElementById('status-text');
+      if (connected) {
+        dot.classList.remove('offline');
+        text.textContent = 'CONNECTED';
+        text.style.color = 'var(--green)';
+      } else {
+        dot.classList.add('offline');
+        text.textContent = 'OFFLINE';
+        text.style.color = 'var(--red)';
+      }
+    }
+
+    // ── Telemetry update (called by HTMX after-request) ─────────────
+    function updateTelemetry(event) {
+      try {
+        const data = JSON.parse(event.detail.xhr.responseText);
+        document.getElementById('telem-speed').textContent = data.speed || 0;
+        document.getElementById('telem-angle').textContent = data.angle || 0;
+        document.getElementById('telem-mode').textContent  = (data.mode || 'manual').toUpperCase();
+        document.getElementById('telem-lidar').textContent = data.lidar_points || 0;
+        document.getElementById('last-update').textContent =
+          'LAST UPDATE: ' + new Date().toTimeString().slice(0,8);
+        setConnected(true);
+      } catch(e) {
+        setConnected(false);
+      }
+    }
+
+    // ── LiDAR state ─────────────────────────────────────────────────
+    let lidarPoints = [];   // current scan points
+    let sweepAngle  = 0;
+    const MAX_DIST_MM = 6000; // clip anything beyond 6m
+
+    // ── LiDAR polling ───────────────────────────────────────────────
+    async function pollLidar() {
+      try {
+        // Poll summary for quadrant distances
+        const sumRes  = await fetch(`${AGENT_URL}/api/lidar/summary`);
+        const sumData = await sumRes.json();
+
+        if (sumData.status === 'ok') {
+          updateQuadrant('front', sumData.closest.front);
+          updateQuadrant('right', sumData.closest.right);
+          updateQuadrant('left',  sumData.closest.left);
+          updateQuadrant('back',  sumData.closest.back);
+          document.getElementById('lidar-points').textContent =
+            `${sumData.points} PTS · ACTIVE`;
+        } else {
+          document.getElementById('lidar-points').textContent = 'AWAITING SENSOR';
+        }
+
+        // Poll full scan for radar plotting
+        const scanRes  = await fetch(`${AGENT_URL}/api/lidar`);
+        const scanData = await scanRes.json();
+        lidarPoints = scanData.scan || [];
+
+      } catch(e) {
+        // LiDAR not available yet
+      }
+    }
+
+    function updateQuadrant(dir, dist) {
+      const el = document.getElementById(`dist-${dir}`);
+      if (!el) return;
+      el.textContent = dist > 0 ? Math.round(dist) : '---';
+      el.className = 'lidar-quadrant-value';
+      if (dist <= 0)       el.classList.add('safe');
+      else if (dist < 400) el.classList.add('danger');
+      else if (dist < 800) el.classList.add('warn');
+      else                 el.classList.add('safe');
+    }
+
+    // ── LiDAR canvas — real point plotting + sweep ───────────────────
+    function drawLidar() {
+      const canvas = document.getElementById('lidar-canvas');
+      const ctx    = canvas.getContext('2d');
+      const cx = canvas.width  / 2;
+      const cy = canvas.height / 2;
+      const r  = cx - 4;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Background
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Range rings with labels
+      const ringDists = [1000, 2000, 4000, 6000]; // mm
+      ringDists.forEach((dist, i) => {
+        const ringR = r * dist / MAX_DIST_MM;
+        ctx.strokeStyle = 'rgba(0,212,255,0.12)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(cx, cy, ringR, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Ring label
+        ctx.fillStyle = 'rgba(0,212,255,0.25)';
+        ctx.font = '9px Share Tech Mono, monospace';
+        ctx.fillText(`${dist/1000}m`, cx + ringR + 2, cy - 2);
+      });
+
+      // Crosshairs
+      ctx.strokeStyle = 'rgba(0,212,255,0.1)';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(cx, 4);             ctx.lineTo(cx, canvas.height - 4); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(4, cy);             ctx.lineTo(canvas.width - 4, cy);  ctx.stroke();
+
+      // ── Plot scan points ─────────────────────────────────────────
+      lidarPoints.forEach(pt => {
+        const dist = pt.distance;
+        if (dist <= 0 || dist > MAX_DIST_MM) return;
+
+        const angleRad = (pt.angle * Math.PI) / 180;
+        const plotR    = r * dist / MAX_DIST_MM;
+
+        // Convert polar to canvas coords (0° = up/forward)
+        const x = cx + plotR * Math.sin(angleRad);
+        const y = cy - plotR * Math.cos(angleRad);
+
+        // Color by distance
+        let color;
+        if      (dist < 400)  color = 'rgba(239,68,68,0.9)';   // red   — danger
+        else if (dist < 800)  color = 'rgba(245,158,11,0.9)';  // amber — warn
+        else if (dist < 2000) color = 'rgba(34,197,94,0.9)';   // green — safe
+        else                  color = 'rgba(0,212,255,0.6)';   // cyan  — far
+
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(x, y, 2, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // ── Sweep line ───────────────────────────────────────────────
+      const sweepRad = (sweepAngle * Math.PI) / 180;
+
+      // Sweep trail
+      for (let i = 1; i <= 40; i++) {
+        const trailAngle = ((sweepAngle - i) * Math.PI) / 180;
+        ctx.strokeStyle = `rgba(0,212,255,${0.015 * (40 - i) / 40})`;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(
+          cx + r * Math.sin(trailAngle),
+          cy - r * Math.cos(trailAngle)
+        );
+        ctx.stroke();
+      }
+
+      // Sweep line
+      ctx.strokeStyle = 'rgba(0,212,255,0.7)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(
+        cx + r * Math.sin(sweepRad),
+        cy - r * Math.cos(sweepRad)
+      );
+      ctx.stroke();
+
+      // Center dot (robot position)
+      ctx.fillStyle = '#00d4ff';
+      ctx.beginPath();
+      ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Forward indicator (small triangle at top)
+      ctx.fillStyle = 'rgba(0,212,255,0.6)';
+      ctx.beginPath();
+      ctx.moveTo(cx,     cy - r - 2);
+      ctx.lineTo(cx - 4, cy - r + 6);
+      ctx.lineTo(cx + 4, cy - r + 6);
+      ctx.closePath();
+      ctx.fill();
+
+      // Advance sweep
+      sweepAngle = (sweepAngle + 3) % 360;
+    }
+
+    // Animate radar at 20fps, poll LiDAR at 2Hz
+    setInterval(drawLidar, 50);
+    setInterval(pollLidar, 500);
+
+    // ── Mode control ────────────────────────────────────────────────
+    async function setMode(mode) {
+      try {
+        await fetch(`${AGENT_URL}/api/mode/${mode}`, { method: 'POST' });
+        const display = document.getElementById('mode-display');
+        display.textContent = mode.toUpperCase();
+        display.className   = `mode-value ${mode}`;
+        document.getElementById('btn-manual').classList.toggle('active', mode === 'manual');
+        document.getElementById('btn-auto').classList.toggle('active',   mode === 'autonomous');
+      } catch(e) {
+        console.error('Mode set failed:', e);
+      }
+    }
+
+    // ── Drive control ───────────────────────────────────────────────
+    // Maintain independent speed and angle state so pressing
+    // left/right doesn't reset speed and vice versa
+    const driveState = { speed: 0, angle: 0 };
+
+    async function sendDrive() {
+      try {
+        await fetch(
+          `${AGENT_URL}/api/drive?speed=${driveState.speed}&angle=${driveState.angle}`,
+          { method: 'POST' }
+        );
+      } catch(e) {}
+    }
+
+    function startDrive(speedFactor, angleFactor) {
+      const speed = parseInt(document.getElementById('speed-slider').value);
+
+      // Only update the axis that was pressed
+      if (speedFactor !== 0) {
+        driveState.speed = Math.round(speed * speedFactor);
+      }
+      if (angleFactor !== 0) {
+        driveState.angle = Math.round(ANGLE_STEP * angleFactor);
+      }
+
+      if (driveInterval) clearInterval(driveInterval);
+      sendDrive();
+      driveInterval = setInterval(sendDrive, 150);
+
+      // Visual feedback
+      const map = { '1,0': 'btn-fwd', '-1,0': 'btn-back', '0,-1': 'btn-left', '0,1': 'btn-right' };
+      const key = `${speedFactor},${angleFactor}`;
+      if (map[key]) document.getElementById(map[key])?.classList.add('pressed');
+    }
+
+    function stopAxis(axis) {
+      // When key released, zero out only that axis
+      if (axis === 'speed') driveState.speed = 0;
+      if (axis === 'angle') driveState.angle = 0;
+
+      // If both axes are zero, stop completely
+      if (driveState.speed === 0 && driveState.angle === 0) {
+        if (driveInterval) { clearInterval(driveInterval); driveInterval = null; }
+        fetch(`${AGENT_URL}/api/stop`, { method: 'POST' }).catch(() => {});
+      } else {
+        // Still moving on one axis — keep sending
+        sendDrive();
+      }
+      document.querySelectorAll('.dpad-btn').forEach(b => b.classList.remove('pressed'));
+    }
+
+    function stopDrive() {
+      driveState.speed = 0;
+      driveState.angle = 0;
+      if (driveInterval) { clearInterval(driveInterval); driveInterval = null; }
+      fetch(`${AGENT_URL}/api/stop`, { method: 'POST' }).catch(() => {});
+      document.querySelectorAll('.dpad-btn').forEach(b => b.classList.remove('pressed'));
+    }
+
+    async function stopCar() {
+      driveState.speed = 0;
+      driveState.angle = 0;
+      if (driveInterval) { clearInterval(driveInterval); driveInterval = null; }
+      try {
+        await fetch(`${AGENT_URL}/api/stop`, { method: 'POST' });
+      } catch(e) {}
+    }
+
+    async function shutdownPicar() {
+      const confirmed = confirm(
+        'Are you sure you want to shutdown the PiCar?\nThis will power off the Raspberry Pi.'
+      );
+      if (!confirmed) return;
+      const btn = document.getElementById('btn-shutdown');
+      btn.textContent = '⏻ SHUTTING DOWN...';
+      btn.style.opacity = '0.5';
+      btn.disabled = true;
+      try {
+        await fetch(`${AGENT_URL}/api/shutdown`, { method: 'POST' });
+      } catch(e) {
+        // Connection will drop when Pi shuts down — that's expected
+      }
+      setConnected(false);
+    }
+
+    // ── Keyboard controls ───────────────────────────────────────────
+    const keyState = {};
+
+    document.addEventListener('keydown', (e) => {
+      if (keyState[e.key]) return;
+      keyState[e.key] = true;
+
+      switch(e.key.toLowerCase()) {
+        case 'w': startDrive( 1,  0); break;
+        case 's': startDrive(-1,  0); break;
+        case 'a': startDrive( 0, -1); break;
+        case 'd': startDrive( 0,  1); break;
+        case ' ':
+          e.preventDefault();
+          stopCar();
+          break;
+      }
+    });
+
+    document.addEventListener('keyup', (e) => {
+      keyState[e.key] = false;
+      switch(e.key.toLowerCase()) {
+        case 'w': case 's': stopAxis('speed'); break;
+        case 'a': case 'd': stopAxis('angle'); break;
+      }
+    });
+
+    // ── Initial status check ────────────────────────────────────────
+    fetch(`${AGENT_URL}/api/status`)
+      .then(r => r.json())
+      .then(data => {
+        setConnected(true);
+        document.getElementById('telem-speed').textContent = data.speed || 0;
+        document.getElementById('telem-angle').textContent = data.angle || 0;
+        document.getElementById('telem-mode').textContent  = (data.mode || 'manual').toUpperCase();
+      })
+      .catch(() => setConnected(false));
+  </script>
+</body>
+</html>

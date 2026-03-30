@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+rplidarc1
+pyserial
+vilib
+picarx
+robot_hat
