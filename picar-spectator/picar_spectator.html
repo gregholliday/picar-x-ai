@@ -1,0 +1,816 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PiCar-X Live — Greg Holliday</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&family=Exo+2:wght@300;400;600&display=swap" rel="stylesheet" />
+
+  <style>
+    :root {
+      --bg-base:        #0a0c0f;
+      --bg-panel:       #0f1318;
+      --bg-panel-2:     #141820;
+      --border:         #1e2a3a;
+      --amber:          #f59e0b;
+      --cyan:           #00d4ff;
+      --green:          #22c55e;
+      --red:            #ef4444;
+      --text-primary:   #e2e8f0;
+      --text-secondary: #64748b;
+      --text-dim:       #334155;
+      --font-mono:      'Share Tech Mono', monospace;
+      --font-display:   'Orbitron', sans-serif;
+      --font-body:      'Exo 2', sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg-base);
+      color: var(--text-primary);
+      font-family: var(--font-body);
+      min-height: 100vh;
+    }
+
+    /* Scanline overlay */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: repeating-linear-gradient(
+        0deg, transparent, transparent 2px,
+        rgba(0,0,0,0.06) 2px, rgba(0,0,0,0.06) 4px
+      );
+      pointer-events: none;
+      z-index: 1000;
+    }
+
+    /* ── Header ─────────────────────────────────────────────────── */
+    header {
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: relative;
+    }
+
+    header::after {
+      content: '';
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+      opacity: 0.4;
+    }
+
+    .header-title {
+      font-family: var(--font-display);
+      font-size: 1rem;
+      font-weight: 900;
+      letter-spacing: 0.2em;
+      color: var(--cyan);
+      text-shadow: 0 0 20px rgba(0,212,255,0.4);
+    }
+
+    .header-title span { color: var(--amber); }
+
+    .header-right {
+      font-family: var(--font-mono);
+      font-size: 0.65rem;
+      color: var(--text-secondary);
+      text-align: right;
+      line-height: 1.8;
+    }
+
+    .status-dot {
+      display: inline-block;
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 8px var(--green);
+      animation: pulse 2s infinite;
+      margin-right: 5px;
+    }
+    .status-dot.offline { background: var(--red); box-shadow: 0 0 8px var(--red); animation: none; }
+
+    .spectator-badge {
+      font-family: var(--font-display);
+      font-size: 0.5rem;
+      letter-spacing: 0.15em;
+      color: var(--amber);
+      border: 1px solid var(--amber);
+      padding: 2px 8px;
+      border-radius: 2px;
+      margin-left: 12px;
+      vertical-align: middle;
+      opacity: 0.8;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.4; }
+    }
+
+    /* ── Layout ─────────────────────────────────────────────────── */
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1fr 320px;
+      gap: 10px;
+      padding: 10px;
+      width: 100%;
+    }
+
+    .left-column { display: flex; flex-direction: column; gap: 10px; }
+    .right-column { display: flex; flex-direction: column; gap: 10px; }
+
+    /* ── Panels ─────────────────────────────────────────────────── */
+    .panel {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .panel::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--cyan), transparent);
+    }
+
+    .panel-header {
+      padding: 7px 12px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--bg-panel-2);
+    }
+
+    .panel-title {
+      font-family: var(--font-display);
+      font-size: 0.55rem;
+      font-weight: 700;
+      letter-spacing: 0.15em;
+      color: var(--cyan);
+    }
+
+    .panel-badge {
+      font-family: var(--font-mono);
+      font-size: 0.55rem;
+      color: var(--text-secondary);
+    }
+
+    /* ── Camera ─────────────────────────────────────────────────── */
+    .camera-container {
+      position: relative;
+      background: #000;
+      height: 480px;
+      overflow: hidden;
+    }
+
+    .camera-container img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    .camera-container::before {
+      content: '';
+      position: absolute;
+      top: 8px; left: 8px;
+      width: 20px; height: 20px;
+      border-top: 2px solid var(--cyan);
+      border-left: 2px solid var(--cyan);
+      z-index: 10;
+    }
+
+    .camera-container::after {
+      content: '';
+      position: absolute;
+      bottom: 8px; right: 8px;
+      width: 20px; height: 20px;
+      border-bottom: 2px solid var(--cyan);
+      border-right: 2px solid var(--cyan);
+      z-index: 10;
+    }
+
+    .camera-overlay-tl {
+      position: absolute;
+      top: 14px; left: 14px;
+      font-family: var(--font-mono);
+      font-size: 0.6rem;
+      color: var(--cyan);
+      text-shadow: 0 0 8px var(--cyan);
+      line-height: 1.6;
+      z-index: 20;
+      pointer-events: none;
+    }
+
+    .camera-overlay-br {
+      position: absolute;
+      bottom: 14px; right: 14px;
+      font-family: var(--font-mono);
+      font-size: 0.6rem;
+      color: var(--amber);
+      text-align: right;
+      line-height: 1.6;
+      z-index: 20;
+      pointer-events: none;
+    }
+
+    .camera-no-signal {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      background: repeating-linear-gradient(
+        45deg, #0a0a0a, #0a0a0a 4px, #111 4px, #111 8px
+      );
+    }
+
+    .camera-no-signal span {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+    }
+
+    /* ── LiDAR ──────────────────────────────────────────────────── */
+    .lidar-container {
+      padding: 10px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+
+    #lidar-canvas {
+      background: #000;
+      border: 1px solid var(--border);
+      border-radius: 50%;
+      flex-shrink: 0;
+      width: 220px;
+      height: 220px;
+    }
+
+    .lidar-stats {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+
+    .lidar-quadrant {
+      background: var(--bg-panel-2);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 7px;
+      text-align: center;
+    }
+
+    .lidar-quadrant-label {
+      font-family: var(--font-mono);
+      font-size: 0.55rem;
+      color: var(--text-secondary);
+      letter-spacing: 0.1em;
+      margin-bottom: 3px;
+    }
+
+    .lidar-quadrant-value { font-family: var(--font-mono); font-size: 1rem; font-weight: bold; }
+    .lidar-quadrant-value.safe   { color: var(--green); }
+    .lidar-quadrant-value.warn   { color: var(--amber); }
+    .lidar-quadrant-value.danger { color: var(--red); }
+    .lidar-quadrant-unit { font-family: var(--font-mono); font-size: 0.55rem; color: var(--text-secondary); }
+
+    /* ── Telemetry ──────────────────────────────────────────────── */
+    .telemetry-grid {
+      padding: 10px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+
+    .telem-item {
+      background: var(--bg-panel-2);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 7px 10px;
+    }
+
+    .telem-label {
+      font-family: var(--font-mono);
+      font-size: 0.5rem;
+      color: var(--text-secondary);
+      letter-spacing: 0.1em;
+      margin-bottom: 2px;
+    }
+
+    .telem-value {
+      font-family: var(--font-mono);
+      font-size: 0.9rem;
+      color: var(--cyan);
+    }
+
+    .telem-unit { font-size: 0.55rem; color: var(--text-secondary); }
+
+    /* ── Navigator decisions ────────────────────────────────────── */
+    .decision-display {
+      padding: 12px;
+      text-align: center;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .decision-label {
+      font-family: var(--font-mono);
+      font-size: 0.55rem;
+      color: var(--text-secondary);
+      letter-spacing: 0.15em;
+      margin-bottom: 6px;
+    }
+
+    .decision-value {
+      font-family: var(--font-display);
+      font-size: 1rem;
+      font-weight: 900;
+      letter-spacing: 0.15em;
+      color: var(--green);
+      text-shadow: 0 0 15px rgba(34,197,94,0.4);
+    }
+
+    .decision-value.FORWARD       { color: var(--green);  text-shadow: 0 0 15px rgba(34,197,94,0.4); }
+    .decision-value.FORWARD_SLOW  { color: var(--amber);  text-shadow: 0 0 15px rgba(245,158,11,0.4); }
+    .decision-value.TURN_LEFT     { color: var(--cyan);   text-shadow: 0 0 15px rgba(0,212,255,0.4); }
+    .decision-value.TURN_RIGHT    { color: var(--cyan);   text-shadow: 0 0 15px rgba(0,212,255,0.4); }
+    .decision-value.REVERSE       { color: var(--amber);  text-shadow: 0 0 15px rgba(245,158,11,0.4); }
+    .decision-value.STUCK         { color: var(--red);    text-shadow: 0 0 15px rgba(239,68,68,0.4); animation: pulse 0.5s infinite; }
+    .decision-value.CLIFF_BACKUP  { color: var(--red);    text-shadow: 0 0 15px rgba(239,68,68,0.4); animation: pulse 0.5s infinite; }
+    .decision-value.IDLE          { color: var(--text-secondary); text-shadow: none; }
+
+    .decision-log {
+      padding: 8px 12px;
+      max-height: 180px;
+      overflow-y: auto;
+    }
+
+    .decision-log-item {
+      font-family: var(--font-mono);
+      font-size: 0.58rem;
+      color: var(--text-secondary);
+      padding: 2px 0;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      gap: 8px;
+    }
+
+    .decision-log-item .time { color: var(--text-dim); flex-shrink: 0; }
+    .decision-log-item .dec  { color: var(--text-primary); }
+
+    /* ── Mode indicator ─────────────────────────────────────────── */
+    .mode-indicator {
+      padding: 10px 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .mode-label {
+      font-family: var(--font-mono);
+      font-size: 0.55rem;
+      color: var(--text-secondary);
+      letter-spacing: 0.1em;
+    }
+
+    .mode-value {
+      font-family: var(--font-display);
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+    }
+
+    .mode-value.manual     { color: var(--amber); }
+    .mode-value.autonomous { color: var(--green); }
+
+    /* ── Footer ─────────────────────────────────────────────────── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 6px 20px;
+      display: flex;
+      justify-content: space-between;
+      background: var(--bg-panel);
+      font-family: var(--font-mono);
+      font-size: 0.55rem;
+      color: var(--text-dim);
+    }
+
+    /* ── Responsive ─────────────────────────────────────────────── */
+    @media (max-width: 800px) {
+      .main-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ── Header ──────────────────────────────────────────────── -->
+  <header>
+    <div>
+      <div class="header-title">
+        PICAR<span>-X</span> LIVE
+        <span class="spectator-badge">SPECTATOR</span>
+      </div>
+      <div style="font-family:var(--font-mono);font-size:0.55rem;color:var(--text-secondary);margin-top:2px;">
+        GREG HOLLIDAY · SUNFOUNDER PICAR-X · RPLiDAR C1M1
+      </div>
+    </div>
+    <div class="header-right">
+      <div>
+        <span class="status-dot" id="status-dot"></span>
+        <span id="status-text">CONNECTING...</span>
+      </div>
+      <div id="clock"></div>
+    </div>
+  </header>
+
+  <!-- ── Main Grid ────────────────────────────────────────────── -->
+  <div class="main-grid">
+
+    <!-- Left column: camera + LiDAR -->
+    <div class="left-column">
+
+      <!-- Camera -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">LIVE CAMERA</span>
+          <span class="panel-badge">OV5647 · 640×480 · READ ONLY</span>
+        </div>
+        <div class="camera-container">
+          <img id="camera-feed" src="/stream" alt="Camera"
+            onerror="this.style.display='none'; document.getElementById('no-signal').style.display='flex';"
+            onload="document.getElementById('no-signal').style.display='none'; this.style.display='block';" />
+          <div id="no-signal" class="camera-no-signal" style="display:none;">
+            <span>◈ NO SIGNAL ◈</span>
+          </div>
+          <div class="camera-overlay-tl">
+            <div>REC ●</div>
+            <div id="cam-time"></div>
+          </div>
+          <div class="camera-overlay-br">
+            <div>CAM · CH01</div>
+            <div>greg-holliday.com</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- LiDAR -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">LIDAR TELEMETRY</span>
+          <span class="panel-badge" id="lidar-points">AWAITING DATA</span>
+        </div>
+        <div class="lidar-container">
+          <canvas id="lidar-canvas" width="220" height="220"></canvas>
+          <div class="lidar-stats">
+            <div class="lidar-quadrant">
+              <div class="lidar-quadrant-label">▲ FRONT</div>
+              <div class="lidar-quadrant-value safe" id="dist-front">---</div>
+              <div class="lidar-quadrant-unit">mm</div>
+            </div>
+            <div class="lidar-quadrant">
+              <div class="lidar-quadrant-label">▶ RIGHT</div>
+              <div class="lidar-quadrant-value safe" id="dist-right">---</div>
+              <div class="lidar-quadrant-unit">mm</div>
+            </div>
+            <div class="lidar-quadrant">
+              <div class="lidar-quadrant-label">◀ LEFT</div>
+              <div class="lidar-quadrant-value safe" id="dist-left">---</div>
+              <div class="lidar-quadrant-unit">mm</div>
+            </div>
+            <div class="lidar-quadrant">
+              <div class="lidar-quadrant-label">▼ REAR</div>
+              <div class="lidar-quadrant-value safe" id="dist-back">---</div>
+              <div class="lidar-quadrant-unit">mm</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Right column: navigator + telemetry -->
+    <div class="right-column">
+
+      <!-- Navigator decisions -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">NAVIGATOR</span>
+          <span class="panel-badge">AI DECISIONS</span>
+        </div>
+        <div class="mode-indicator">
+          <span class="mode-label">DRIVE MODE</span>
+          <span class="mode-value manual" id="mode-display">MANUAL</span>
+        </div>
+        <div class="decision-display">
+          <div class="decision-label">CURRENT DECISION</div>
+          <div class="decision-value IDLE" id="decision-display">IDLE</div>
+        </div>
+        <div class="decision-log" id="decision-log">
+          <div class="decision-log-item">
+            <span class="time">--:--:--</span>
+            <span class="dec">Waiting for navigator...</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Telemetry -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">TELEMETRY</span>
+          <span class="panel-badge">LIVE</span>
+        </div>
+        <div class="telemetry-grid">
+          <div class="telem-item">
+            <div class="telem-label">SPEED</div>
+            <div class="telem-value"><span id="telem-speed">0</span><span class="telem-unit"> %</span></div>
+          </div>
+          <div class="telem-item">
+            <div class="telem-label">HEADING</div>
+            <div class="telem-value"><span id="telem-angle">0</span><span class="telem-unit"> °</span></div>
+          </div>
+          <div class="telem-item">
+            <div class="telem-label">ULTRASONIC</div>
+            <div class="telem-value"><span id="telem-us">0</span><span class="telem-unit"> cm</span></div>
+          </div>
+          <div class="telem-item">
+            <div class="telem-label">LIDAR PTS</div>
+            <div class="telem-value"><span id="telem-lidar">0</span></div>
+          </div>
+          <div class="telem-item">
+            <div class="telem-label">CLIFF</div>
+            <div class="telem-value" id="telem-cliff" style="font-size:0.75rem;">OK</div>
+          </div>
+          <div class="telem-item">
+            <div class="telem-label">OBSTACLE</div>
+            <div class="telem-value" id="telem-obstacle" style="font-size:0.75rem;">CLEAR</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- About -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">ABOUT</span>
+        </div>
+        <div style="padding:12px;font-family:var(--font-mono);font-size:0.6rem;color:var(--text-secondary);line-height:1.8;">
+          <div>PLATFORM: SunFounder PiCar-X</div>
+          <div>COMPUTE: Raspberry Pi 4</div>
+          <div>LIDAR: RPLidar C1M1 (12m)</div>
+          <div>CAMERA: OV5647 CSI</div>
+          <div>SENSORS: Ultrasonic + Grayscale</div>
+          <div>NAVIGATOR: Python + FastAPI</div>
+          <div style="margin-top:8px;color:var(--text-dim);">
+            github.com/gregholliday/picar-x-ai
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ── Footer ───────────────────────────────────────────────── -->
+  <footer>
+    <div>PICAR-X LIVE · greg-holliday.com · READ ONLY VIEW</div>
+    <div id="last-update">LAST UPDATE: --:--:--</div>
+  </footer>
+
+  <script>
+    // ── Config — all requests go through the K3s proxy ──────────────
+    const API_BASE = '';  // empty = same origin (proxied through K3s)
+
+    let lidarPoints  = [];
+    let sweepAngle   = 0;
+    const MAX_DIST   = 6000;
+
+    // ── Clock ────────────────────────────────────────────────────────
+    function updateClock() {
+      const t = new Date().toTimeString().slice(0,8);
+      document.getElementById('clock').textContent = t;
+      document.getElementById('cam-time').textContent = t;
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    // ── Connection status ────────────────────────────────────────────
+    function setConnected(ok) {
+      const dot  = document.getElementById('status-dot');
+      const text = document.getElementById('status-text');
+      if (ok) {
+        dot.classList.remove('offline');
+        text.textContent = 'LIVE';
+        text.style.color = 'var(--green)';
+      } else {
+        dot.classList.add('offline');
+        text.textContent = 'OFFLINE';
+        text.style.color = 'var(--red)';
+      }
+    }
+
+    // ── Telemetry polling ────────────────────────────────────────────
+    async function pollStatus() {
+      try {
+        const res  = await fetch(`${API_BASE}/api/status`);
+        const data = await res.json();
+
+        document.getElementById('telem-speed').textContent   = data.speed   || 0;
+        document.getElementById('telem-angle').textContent   = data.angle   || 0;
+        document.getElementById('telem-lidar').textContent   = data.lidar_points || 0;
+
+        const mode = document.getElementById('mode-display');
+        mode.textContent  = (data.mode || 'manual').toUpperCase();
+        mode.className    = `mode-value ${data.mode || 'manual'}`;
+
+        const cliff = document.getElementById('telem-cliff');
+        cliff.textContent = data.cliff_detected ? '⚠ CLIFF' : 'OK';
+        cliff.style.color = data.cliff_detected ? 'var(--red)' : 'var(--green)';
+
+        const obs = document.getElementById('telem-obstacle');
+        obs.textContent = data.obstacle_close ? '⚠ CLOSE' : 'CLEAR';
+        obs.style.color = data.obstacle_close ? 'var(--red)' : 'var(--green)';
+
+        document.getElementById('last-update').textContent =
+          'LAST UPDATE: ' + new Date().toTimeString().slice(0,8);
+        setConnected(true);
+      } catch(e) {
+        setConnected(false);
+      }
+    }
+
+    // ── LiDAR polling ────────────────────────────────────────────────
+    async function pollLidar() {
+      try {
+        const sumRes  = await fetch(`${API_BASE}/api/lidar/summary`);
+        const sumData = await sumRes.json();
+
+        if (sumData.status === 'ok') {
+          updateQuadrant('front', sumData.closest.front);
+          updateQuadrant('right', sumData.closest.right);
+          updateQuadrant('left',  sumData.closest.left);
+          updateQuadrant('back',  sumData.closest.back);
+          document.getElementById('lidar-points').textContent =
+            `${sumData.points} PTS · LIVE`;
+        }
+
+        const scanRes  = await fetch(`${API_BASE}/api/lidar`);
+        const scanData = await scanRes.json();
+        lidarPoints = scanData.scan || [];
+
+      } catch(e) {}
+    }
+
+    function updateQuadrant(dir, dist) {
+      const el = document.getElementById(`dist-${dir}`);
+      if (!el) return;
+      el.textContent = dist > 0 ? Math.round(dist) : '---';
+      el.className   = 'lidar-quadrant-value';
+      if      (dist <= 0)   el.classList.add('safe');
+      else if (dist < 400)  el.classList.add('danger');
+      else if (dist < 800)  el.classList.add('warn');
+      else                  el.classList.add('safe');
+    }
+
+    // ── Navigator decisions polling ──────────────────────────────────
+    async function pollNavigator() {
+      try {
+        const res  = await fetch(`${API_BASE}/api/navigator/status`);
+        const data = await res.json();
+
+        const dec = data.decision || 'IDLE';
+        const display = document.getElementById('decision-display');
+        display.textContent = dec.replace(/_/g, ' ');
+        display.className   = `decision-value ${dec}`;
+
+        // Update log
+        const log = document.getElementById('decision-log');
+        if (data.log && data.log.length > 0) {
+          log.innerHTML = [...data.log].reverse().map(entry => `
+            <div class="decision-log-item">
+              <span class="time">${entry.time}</span>
+              <span class="dec">${entry.decision.replace(/_/g, ' ')}</span>
+            </div>
+          `).join('');
+        }
+
+      } catch(e) {}
+    }
+
+    // ── LiDAR canvas ─────────────────────────────────────────────────
+    function drawLidar() {
+      const canvas = document.getElementById('lidar-canvas');
+      const ctx    = canvas.getContext('2d');
+      const cx = canvas.width  / 2;
+      const cy = canvas.height / 2;
+      const r  = cx - 4;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Range rings
+      [1000, 2000, 4000, 6000].forEach(dist => {
+        const ringR = r * dist / MAX_DIST;
+        ctx.strokeStyle = 'rgba(0,212,255,0.12)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(cx, cy, ringR, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(0,212,255,0.2)';
+        ctx.font = '8px Share Tech Mono, monospace';
+        ctx.fillText(`${dist/1000}m`, cx + ringR + 2, cy - 2);
+      });
+
+      // Crosshairs
+      ctx.strokeStyle = 'rgba(0,212,255,0.1)';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(cx, 4); ctx.lineTo(cx, canvas.height - 4); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(4, cy); ctx.lineTo(canvas.width - 4, cy);  ctx.stroke();
+
+      // Scan points
+      lidarPoints.forEach(pt => {
+        const dist = pt.distance;
+        if (dist <= 0 || dist > MAX_DIST) return;
+        const angleRad = (pt.angle * Math.PI) / 180;
+        const plotR    = r * dist / MAX_DIST;
+        const x = cx + plotR * Math.sin(angleRad);
+        const y = cy - plotR * Math.cos(angleRad);
+
+        let color;
+        if      (dist < 400)  color = 'rgba(239,68,68,0.9)';
+        else if (dist < 800)  color = 'rgba(245,158,11,0.9)';
+        else if (dist < 2000) color = 'rgba(34,197,94,0.9)';
+        else                  color = 'rgba(0,212,255,0.6)';
+
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(x, y, 2, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // Sweep line
+      const sweepRad = (sweepAngle * Math.PI) / 180;
+      for (let i = 1; i <= 40; i++) {
+        const trailAngle = ((sweepAngle - i) * Math.PI) / 180;
+        ctx.strokeStyle = `rgba(0,212,255,${0.015 * (40-i) / 40})`;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(cx + r * Math.sin(trailAngle), cy - r * Math.cos(trailAngle));
+        ctx.stroke();
+      }
+
+      ctx.strokeStyle = 'rgba(0,212,255,0.7)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + r * Math.sin(sweepRad), cy - r * Math.cos(sweepRad));
+      ctx.stroke();
+
+      // Robot dot
+      ctx.fillStyle = '#00d4ff';
+      ctx.beginPath();
+      ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Forward indicator
+      ctx.fillStyle = 'rgba(0,212,255,0.6)';
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - r - 2);
+      ctx.lineTo(cx - 4, cy - r + 6);
+      ctx.lineTo(cx + 4, cy - r + 6);
+      ctx.closePath();
+      ctx.fill();
+
+      sweepAngle = (sweepAngle + 3) % 360;
+    }
+
+    // ── Poll intervals ───────────────────────────────────────────────
+    setInterval(drawLidar,       50);   // 20fps radar
+    setInterval(pollStatus,    1000);   // 1Hz telemetry
+    setInterval(pollLidar,      500);   // 2Hz LiDAR
+    setInterval(pollNavigator, 1000);   // 1Hz navigator
+
+    // Initial polls
+    pollStatus();
+    pollLidar();
+    pollNavigator();
+  </script>
+</body>
+</html>
