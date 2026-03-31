@@ -112,6 +112,17 @@ def send_stop():
     except Exception as e:
         log(f"Stop command failed: {e}")
 
+def post_decision(decision: str):
+    """Send current decision to Pi agent for spectator view."""
+    try:
+        requests.post(
+            f"{AGENT_URL}/api/navigator/decision",
+            params={"decision": decision},
+            timeout=0.5
+        )
+    except Exception:
+        pass
+    
 # ── Room mapping ───────────────────────────────────────────────────────────────
 def update_map(scan, rx, ry, heading_deg):
     """
@@ -323,7 +334,8 @@ def main():
                     f"R:{sensors['lidar']['right']:.0f}mm "
                     f"US:{sensors['ultrasonic_cm']:.1f}cm)")
                 last_decision = decision
-
+                post_decision(decision) 
+                
             # Send drive command
             send_drive(speed, angle)
 

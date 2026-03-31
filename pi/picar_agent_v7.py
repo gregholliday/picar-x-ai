@@ -100,6 +100,8 @@ state = {
     "reflex_active":  False,
     "battery_v": 0.0,
     "battery_pct": 0,
+    "navigator_decision": "IDLE",
+    "navigator_log": [],    
 }
 
 # ── Cleanup handler ────────────────────────────────────────────────────────────
@@ -431,6 +433,25 @@ def shutdown():
     subprocess.Popen(['sudo', 'shutdown', 'now'])
     return {"status": "shutting_down"}
 
+# Add new endpoint
+@app.post("/api/navigator/decision")
+def post_navigator_decision(decision: str = "", sensors: dict = None):
+    state["navigator_decision"] = decision
+    state["navigator_log"].append({
+        "time": time.strftime("%H:%M:%S"),
+        "decision": decision
+    })
+    # Keep last 20 decisions
+    if len(state["navigator_log"]) > 20:
+        state["navigator_log"] = state["navigator_log"][-20:]
+    return {"status": "ok"}
+
+@app.get("/api/navigator/status")
+def get_navigator_status():
+    return {
+        "decision": state["navigator_decision"],
+        "log": state["navigator_log"]
+    }
 # ── Main ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
