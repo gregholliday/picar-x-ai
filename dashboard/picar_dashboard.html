@@ -905,7 +905,7 @@
         </div>
         <div class="mode-indicator">
           <span class="mode-label">DRIVE MODE</span>
-          <span class="mode-value manual" id="mode-display">MANUAL</span>
+          <span class="mode-value manual" id="nav-mode-display">MANUAL</span>
         </div>
         <div class="decision-display">
           <div class="decision-label">CURRENT DECISION</div>
@@ -1309,6 +1309,49 @@
         document.getElementById('telem-mode').textContent  = (data.mode || 'manual').toUpperCase();
       })
       .catch(() => setConnected(false));
+
+    // ── Navigator decisions polling ──────────────────────────────────
+    async function pollNavigator() {
+      try {
+        const res  = await fetch(`${AGENT_URL}/api/navigator/status`);
+        const data = await res.json();
+
+        const dec = data.decision || 'IDLE';
+
+        // Update decision display
+        const display = document.getElementById('decision-display');
+        if (display) {
+          display.textContent = dec.replace(/_/g, ' ');
+          display.className   = `decision-value ${dec}`;
+        }
+
+        // Update mode in navigator panel
+        const navMode = document.getElementById('nav-mode-display');
+        if (navMode && data.mode) {
+          navMode.textContent = data.mode.toUpperCase();
+          navMode.className   = `mode-value ${data.mode}`;
+        }
+
+        // Update decision log
+        const log = document.getElementById('decision-log');
+        if (log && data.log && data.log.length > 0) {
+          log.innerHTML = [...data.log].reverse().map(entry => `
+            <div class="decision-log-item">
+              <span class="time">${entry.time}</span>
+              <span class="dec">${entry.decision.replace(/_/g, ' ')}</span>
+            </div>
+          `).join('');
+        }
+
+      } catch(e) {
+        // Navigator not available
+      }
+    }
+
+    // Poll navigator every second
+    setInterval(pollNavigator, 1000);
+    pollNavigator();
+
   </script>
 </body>
 </html>
