@@ -345,6 +345,58 @@
       color: var(--text-secondary);
     }
 
+     /* ── Navigator decisions ────────────────────────────────────── */
+    .decision-display {
+      padding: 12px;
+      text-align: center;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .decision-label {
+      font-family: var(--font-mono);
+      font-size: 0.55rem;
+      color: var(--text-secondary);
+      letter-spacing: 0.15em;
+      margin-bottom: 6px;
+    }
+
+    .decision-value {
+      font-family: var(--font-display);
+      font-size: 1rem;
+      font-weight: 900;
+      letter-spacing: 0.15em;
+      color: var(--green);
+      text-shadow: 0 0 15px rgba(34,197,94,0.4);
+    }
+
+    .decision-value.FORWARD       { color: var(--green);  text-shadow: 0 0 15px rgba(34,197,94,0.4); }
+    .decision-value.FORWARD_SLOW  { color: var(--amber);  text-shadow: 0 0 15px rgba(245,158,11,0.4); }
+    .decision-value.TURN_LEFT     { color: var(--cyan);   text-shadow: 0 0 15px rgba(0,212,255,0.4); }
+    .decision-value.TURN_RIGHT    { color: var(--cyan);   text-shadow: 0 0 15px rgba(0,212,255,0.4); }
+    .decision-value.REVERSE       { color: var(--amber);  text-shadow: 0 0 15px rgba(245,158,11,0.4); }
+    .decision-value.STUCK         { color: var(--red);    text-shadow: 0 0 15px rgba(239,68,68,0.4); animation: pulse 0.5s infinite; }
+    .decision-value.CLIFF_BACKUP  { color: var(--red);    text-shadow: 0 0 15px rgba(239,68,68,0.4); animation: pulse 0.5s infinite; }
+    .decision-value.IDLE          { color: var(--text-secondary); text-shadow: none; }
+
+    .decision-log {
+      padding: 8px 12px;
+      max-height: 180px;
+      overflow-y: auto;
+    }
+
+    .decision-log-item {
+      font-family: var(--font-mono);
+      font-size: 0.58rem;
+      color: var(--text-secondary);
+      padding: 2px 0;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      gap: 8px;
+    }
+
+    .decision-log-item .time { color: var(--text-dim); flex-shrink: 0; }
+    .decision-log-item .dec  { color: var(--text-primary); }
+
     /* ── Right Column ─────────────────────────────────────────────── */
     .right-column {
       grid-column: 2;
@@ -845,7 +897,27 @@
           </div>
         </div>
       </div>
-
+      <!-- Navigator decisions -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">NAVIGATOR</span>
+          <span class="panel-badge">AI DECISIONS</span>
+        </div>
+        <div class="mode-indicator">
+          <span class="mode-label">DRIVE MODE</span>
+          <span class="mode-value manual" id="mode-display">MANUAL</span>
+        </div>
+        <div class="decision-display">
+          <div class="decision-label">CURRENT DECISION</div>
+          <div class="decision-value IDLE" id="decision-display">IDLE</div>
+        </div>
+        <div class="decision-log" id="decision-log">
+          <div class="decision-log-item">
+            <span class="time">--:--:--</span>
+            <span class="dec">Waiting for navigator...</span>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
