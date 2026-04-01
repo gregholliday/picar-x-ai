@@ -40,13 +40,13 @@ CLIFF_STOP      = 100   # Below this = cliff detected
 CLIFF_WARN      = 500   # Below this = near edge
 
 # ── Navigator Settings ─────────────────────────────────────────────────────────
-BASE_SPEED    = 40      # Normal cruising speed (0-100)
-SLOW_SPEED    = 25      # Obstacle avoidance speed
+BASE_SPEED    = 30      # Normal cruising speed (0-100)
+SLOW_SPEED    = 20      # Obstacle avoidance speed
 TURN_ANGLE    = 35      # Steering angle for turns (degrees)
 
 # LiDAR distance thresholds (mm)
-FRONT_CLEAR   = 600     # Path is clear, drive forward
-FRONT_CAUTION = 350     # Slow down
+FRONT_CLEAR   = 800     # Path is clear, drive forward
+FRONT_CAUTION = 500     # Slow down
 SIDE_CLEAR    = 300     # Minimum side clearance for turns
 
 # ── LiDAR Orientation ──────────────────────────────────────────────────────────

@@ -43,7 +43,7 @@ except ImportError:
     FRONT_CAUTION = 350
     SIDE_CLEAR    = 300
 
-POLL_INTERVAL = 0.4    # seconds between navigator decisions
+POLL_INTERVAL = 0.2    # seconds between navigator decisions
 
 # ── Room map ───────────────────────────────────────────────────────────────────
 # Simple occupancy grid — tracks where obstacles have been seen

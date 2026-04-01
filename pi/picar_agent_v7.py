@@ -179,6 +179,11 @@ def reflex_worker():
             if state["mode"] == "autonomous":
                 cliff  = state["cliff_detected"]
                 us_cm  = state["ultrasonic_cm"]
+                lidar_front = min(
+                    (m["distance"] for m in state["lidar_scan"] 
+                    if 315 <= m["angle"] <= 360 or 0 <= m["angle"] <= 45),
+                    default=9999
+                )
 
                 if cliff:
                     px.stop()
@@ -189,7 +194,11 @@ def reflex_worker():
                     px.backward(30)
                     time.sleep(0.5)
                     px.stop()
-
+                elif lidar_front < 300 and state["speed"] > 0:
+                    px.forward(20)
+                    state["reflex_active"] = True
+                    state["speed"] = 20
+                    print(f"REFLEX: LiDAR front {lidar_front}mm — slowing to 20.")
                 elif 0 < us_cm < ULTRASONIC_STOP:
                     px.stop()
                     state["speed"] = 0
