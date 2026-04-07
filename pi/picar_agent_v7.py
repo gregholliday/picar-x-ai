@@ -328,7 +328,12 @@ def get_status():
         "obstacle_close": state["obstacle_close"],
         "reflex_active":  state["reflex_active"],
         "battery_v":      state["battery_v"],
-        "battery_pct":    state["battery_pct"],        
+        "battery_pct":    state["battery_pct"],  
+        "task":               "",
+        "task_status":        "IDLE",
+        "task_found":         False,
+        "vision_description": "",
+        "vision_hint":        "none",              
     }
 
 @app.get("/api/sensors")
@@ -488,6 +493,35 @@ def buzzer(sound: str = "horn"):
             print(f"Sound error: {e}")
     threading.Thread(target=play, daemon=True).start()
     return {"status": "ok"}
+
+# ── Task endpoints ─────────────────────────────────────────────────────────────
+@app.post("/api/task")
+def set_task(task: str = ""):
+    state["task"]        = task
+    state["task_status"] = "SEARCHING" if task else "IDLE"
+    state["task_found"]  = False
+    print(f"Task set: '{task}'")
+    return {"task": state["task"], "status": state["task_status"]}
+
+@app.get("/api/task")
+def get_task():
+    return {
+        "task":   state["task"],
+        "status": state["task_status"],
+        "found":  state["task_found"],
+    }
+
+@app.post("/api/task/found")
+def task_found():
+    state["task_status"] = "GOAL_REACHED"
+    state["task_found"]  = True
+    print(f"Task complete: '{state['task']}'")
+    return {"status": "GOAL_REACHED"}
+
+@app.post("/api/task/status")
+def set_task_status(status: str = "SEARCHING"):
+    state["task_status"] = status
+    return {"status": state["task_status"]}
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
