@@ -36,6 +36,7 @@ os.getlogin = lambda: PI_USERNAME
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from picarx import Picarx
+from picarx.music import Music
 from vilib import Vilib
 from rplidarc1 import RPLidar as RPLidarC1
 from robot_hat import ADC
@@ -65,6 +66,17 @@ app.add_middleware(
 )
 
 px = Picarx()
+
+# ── Sound ─────────────────────────────────────────────────────────────────────
+try:
+    music = Music()
+    music.music_set_volume(80)
+    SOUND_HORN    = '/mnt/ai/picar-x/sounds/car-double-horn.wav'
+    SOUND_ENGINE  = '/mnt/ai/picar-x/sounds/car-start-engine.wav'
+    print("Sound system initialized.")
+except Exception as e:
+    music = None
+    print(f"Sound system not available: {e}")
 
 # ── Battery monitor ────────────────────────────────────────────────────────────
 try:
@@ -461,6 +473,22 @@ def get_navigator_status():
         "decision": state["navigator_decision"],
         "log": state["navigator_log"]
     }
+
+@app.post("/api/buzzer")
+def buzzer(sound: str = "horn"):
+    def play():
+        try:
+            if music is None:
+                return
+            if sound == "horn":
+                music.sound_play_threading(SOUND_HORN)
+            elif sound == "engine":
+                music.sound_play_threading(SOUND_ENGINE)
+        except Exception as e:
+            print(f"Sound error: {e}")
+    threading.Thread(target=play, daemon=True).start()
+    return {"status": "ok"}
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
