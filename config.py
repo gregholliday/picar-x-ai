@@ -3,14 +3,8 @@
 # This is the only file you need to edit for basic configuration.
 
 # ── Network ────────────────────────────────────────────────────────────────────
-PI_IP        = "YOUR_PI_IP"       # IP address of your Raspberry Pi
-OLLAMA_IP    = "YOUR_OLLAMA_IP"   # IP of machine running Ollama (optional)
 OLLAMA_PORT  = 11434
-OLLAMA_MODEL = "gemma3"
-
-# ── Pi Username ────────────────────────────────────────────────────────────────
-# Your username on the Raspberry Pi (default is 'pi')
-PI_USERNAME  = "pi"
+OLLAMA_MODEL = "qen2.5vl:latest"
 
 # ── Agent Settings ─────────────────────────────────────────────────────────────
 AGENT_PORT   = 8000
@@ -25,7 +19,7 @@ LIDAR_BAUDRATE = 460800
 # Negative = corrects rightward drift (turns wheels slightly left)
 # Positive = corrects leftward drift (turns wheels slightly right)
 # Start with small values (-1, -2, -3) and test until the car drives straight.
-STEERING_TRIM = 0
+STEERING_TRIM = -2
 
 # ── Safety Thresholds ──────────────────────────────────────────────────────────
 # Ultrasonic sensor (cm)
