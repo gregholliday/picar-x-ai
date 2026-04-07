@@ -702,6 +702,108 @@
     .battery-text.critical {
       color: var(--red);
     }
+
+    /* ── Task panel ───────────────────────────────────────────── */
+    .task-input-row {
+      display: flex;
+      gap: 6px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .task-input {
+      flex: 1;
+      background: var(--bg-base);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+      font-size: 0.65rem;
+      padding: 5px 8px;
+      outline: none;
+    }
+
+    .task-input:focus {
+      border-color: var(--cyan);
+      box-shadow: 0 0 8px rgba(0,212,255,0.2);
+    }
+
+    .task-input::placeholder { color: var(--text-dim); }
+
+    .btn-task {
+      background: var(--bg-panel-2);
+      border: 1px solid var(--cyan);
+      color: var(--cyan);
+      font-family: var(--font-mono);
+      font-size: 0.6rem;
+      padding: 5px 10px;
+      border-radius: 3px;
+      cursor: pointer;
+      letter-spacing: 0.08em;
+      transition: all 0.2s;
+    }
+
+    .btn-task:hover {
+      background: var(--cyan);
+      color: var(--bg-base);
+    }
+
+    .btn-task-clear {
+      border-color: var(--text-secondary);
+      color: var(--text-secondary);
+    }
+
+    .btn-task-clear:hover {
+      background: var(--text-secondary);
+      color: var(--bg-base);
+    }
+
+    .task-status {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .task-status-label {
+      font-family: var(--font-mono);
+      font-size: 0.55rem;
+      color: var(--text-secondary);
+      letter-spacing: 0.1em;
+    }
+
+    .task-status-value {
+      font-family: var(--font-display);
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+    }
+
+    .task-status-value.IDLE       { color: var(--text-secondary); }
+    .task-status-value.SEARCHING  { color: var(--amber); animation: pulse 1s infinite; }
+    .task-status-value.APPROACHING{ color: var(--cyan);  animation: pulse 0.5s infinite; }
+    .task-status-value.GOAL_REACHED { color: var(--green); text-shadow: 0 0 20px rgba(34,197,94,0.6); }
+
+    .task-description {
+      padding: 6px 12px;
+      font-family: var(--font-mono);
+      font-size: 0.6rem;
+      color: var(--text-secondary);
+      border-bottom: 1px solid var(--border);
+      min-height: 28px;
+      font-style: italic;
+    }
+
+    .vision-description {
+      padding: 6px 12px;
+      font-family: var(--font-mono);
+      font-size: 0.58rem;
+      color: var(--text-dim);
+      min-height: 24px;
+      border-bottom: 1px solid var(--border);
+      line-height: 1.4;
+    }
   </style>
 </head>
 <body>
@@ -897,20 +999,47 @@
           </div>
         </div>
       </div>
-      <!-- Navigator decisions -->
+      <!-- Navigator + Task panel -->
       <div class="panel">
         <div class="panel-header">
           <span class="panel-title">NAVIGATOR</span>
           <span class="panel-badge">AI DECISIONS</span>
         </div>
+
+        <!-- Drive mode -->
         <div class="mode-indicator">
           <span class="mode-label">DRIVE MODE</span>
           <span class="mode-value manual" id="nav-mode-display">MANUAL</span>
         </div>
+
+        <!-- Task input -->
+        <div class="task-input-row">
+          <input class="task-input" type="text" id="task-input"
+            placeholder="Give the car a task... e.g. find the purple flag"
+            onkeydown="if(event.key==='Enter') setTask()" />
+          <button class="btn-task" onclick="setTask()">SET</button>
+          <button class="btn-task btn-task-clear" onclick="clearTask()">CLR</button>
+        </div>
+
+        <!-- Task status -->
+        <div class="task-status">
+          <span class="task-status-label">TASK STATUS</span>
+          <span class="task-status-value IDLE" id="task-status-display">IDLE</span>
+        </div>
+
+        <!-- Current task description -->
+        <div class="task-description" id="task-description">No task set</div>
+
+        <!-- Vision description -->
+        <div class="vision-description" id="vision-description">Awaiting vision...</div>
+
+        <!-- Current navigator decision -->
         <div class="decision-display">
           <div class="decision-label">CURRENT DECISION</div>
           <div class="decision-value IDLE" id="decision-display">IDLE</div>
         </div>
+
+        <!-- Decision log -->
         <div class="decision-log" id="decision-log">
           <div class="decision-log-item">
             <span class="time">--:--:--</span>
@@ -1299,6 +1428,115 @@
     setInterval(pollBattery, 30000);
     pollBattery();  // poll immediately on load
 
+
+    // ── Task management ─────────────────────────────────────────────
+    async function setTask() {
+      const input = document.getElementById('task-input');
+      const task  = input.value.trim();
+      if (!task) return;
+
+      try {
+        await fetch(`${AGENT_URL}/api/task?task=${encodeURIComponent(task)}`, {
+          method: 'POST'
+        });
+        updateTaskDisplay({ task, status: 'SEARCHING', found: false });
+        log(`Task set: "${task}"`);
+      } catch(e) {
+        log('Failed to set task');
+      }
+    }
+
+    async function clearTask() {
+      try {
+        await fetch(`${AGENT_URL}/api/task?task=`, { method: 'POST' });
+        document.getElementById('task-input').value = '';
+        updateTaskDisplay({ task: '', status: 'IDLE', found: false });
+        log('Task cleared');
+      } catch(e) {
+        log('Failed to clear task');
+      }
+    }
+
+    function updateTaskDisplay(data) {
+      const status  = data.status  || 'IDLE';
+      const task    = data.task    || '';
+      const found   = data.found   || false;
+
+      const statusEl = document.getElementById('task-status-display');
+      statusEl.textContent = status.replace(/_/g, ' ');
+      statusEl.className   = `task-status-value ${status}`;
+
+      const descEl = document.getElementById('task-description');
+      descEl.textContent = task ? `🎯 ${task}` : 'No task set';
+      descEl.style.color = task ? 'var(--cyan)' : 'var(--text-secondary)';
+
+      // Goal reached celebration
+      if (found || status === 'GOAL_REACHED') {
+        document.title = '🎯 GOAL REACHED! — PiCar-X Mission Control';
+        statusEl.style.animation = 'pulse 0.3s infinite';
+      }
+    }
+
+    // ── Task polling ─────────────────────────────────────────────────
+    async function pollTask() {
+      try {
+        const res  = await fetch(`${AGENT_URL}/api/task`);
+        const data = await res.json();
+        updateTaskDisplay(data);
+      } catch(e) {}
+    }
+
+    // ── Vision polling ───────────────────────────────────────────────
+    async function pollVision() {
+      try {
+        const res  = await fetch(`${AGENT_URL}/api/vision`);
+        const data = await res.json();
+        const desc = data.description || '';
+        const hint = data.hint        || 'none';
+        const el   = document.getElementById('vision-description');
+        if (desc) {
+          el.textContent = `👁 ${desc}`;
+          el.style.color = hint === 'stop' ? 'var(--red)' : 'var(--text-dim)';
+        }
+      } catch(e) {}
+    }
+
+    // ── Navigator decisions polling ──────────────────────────────────
+    async function pollNavigator() {
+      try {
+        const res  = await fetch(`${AGENT_URL}/api/navigator/status`);
+        const data = await res.json();
+
+        const dec = data.decision || 'IDLE';
+        const display = document.getElementById('decision-display');
+        display.textContent = dec.replace(/_/g, ' ');
+        display.className   = `decision-value ${dec}`;
+
+        const navMode = document.getElementById('nav-mode-display');
+        if (navMode && data.mode) {
+          navMode.textContent = data.mode.toUpperCase();
+          navMode.className   = `mode-value ${data.mode}`;
+        }
+
+        const log = document.getElementById('decision-log');
+        if (log && data.log && data.log.length > 0) {
+          log.innerHTML = [...data.log].reverse().map(entry => `
+            <div class="decision-log-item">
+              <span class="time">${entry.time}</span>
+              <span class="dec">${entry.decision.replace(/_/g, ' ')}</span>
+            </div>
+          `).join('');
+        }
+      } catch(e) {}
+    }
+
+    setInterval(pollNavigator, 1000);
+    setInterval(pollTask,      2000);
+    setInterval(pollVision,    3000);
+    pollNavigator();
+    pollTask();
+    pollVision();
+
     // ── Initial status check ────────────────────────────────────────
     fetch(`${AGENT_URL}/api/status`)
       .then(r => r.json())
@@ -1309,49 +1547,6 @@
         document.getElementById('telem-mode').textContent  = (data.mode || 'manual').toUpperCase();
       })
       .catch(() => setConnected(false));
-
-    // ── Navigator decisions polling ──────────────────────────────────
-    async function pollNavigator() {
-      try {
-        const res  = await fetch(`${AGENT_URL}/api/navigator/status`);
-        const data = await res.json();
-
-        const dec = data.decision || 'IDLE';
-
-        // Update decision display
-        const display = document.getElementById('decision-display');
-        if (display) {
-          display.textContent = dec.replace(/_/g, ' ');
-          display.className   = `decision-value ${dec}`;
-        }
-
-        // Update mode in navigator panel
-        const navMode = document.getElementById('nav-mode-display');
-        if (navMode && data.mode) {
-          navMode.textContent = data.mode.toUpperCase();
-          navMode.className   = `mode-value ${data.mode}`;
-        }
-
-        // Update decision log
-        const log = document.getElementById('decision-log');
-        if (log && data.log && data.log.length > 0) {
-          log.innerHTML = [...data.log].reverse().map(entry => `
-            <div class="decision-log-item">
-              <span class="time">${entry.time}</span>
-              <span class="dec">${entry.decision.replace(/_/g, ' ')}</span>
-            </div>
-          `).join('');
-        }
-
-      } catch(e) {
-        // Navigator not available
-      }
-    }
-
-    // Poll navigator every second
-    setInterval(pollNavigator, 1000);
-    pollNavigator();
-
   </script>
 </body>
 </html>
