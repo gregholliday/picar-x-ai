@@ -112,8 +112,13 @@ state = {
     "reflex_active":  False,
     "battery_v": 0.0,
     "battery_pct": 0,
+    "task":               "",
+    "task_status":        "IDLE",
+    "task_found":         False,
+    "vision_description": "",
+    "vision_hint":        "none",       
     "navigator_decision": "IDLE",
-    "navigator_log": [],    
+    "navigator_log":      []   
 }
 
 # ── Cleanup handler ────────────────────────────────────────────────────────────
