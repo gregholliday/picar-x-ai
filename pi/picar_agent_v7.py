@@ -152,7 +152,16 @@ signal.signal(signal.SIGTERM, cleanup)
 print("Starting camera...")
 Vilib.camera_start(vflip=False, hflip=False)
 Vilib.display(local=False, web=True)
-time.sleep(2)
+time.sleep(3)
+# Fix OV5647 pink/red colour cast
+try:
+    Vilib.set_controls({
+        "ColourGains": (1.0, 2.4),    # reduce red, boost blue
+        "AnalogueGain": 2.0            # reduce gain to minimize colour noise
+    })
+    print("Camera colour correction applied.")
+except Exception as e:
+    print(f"Colour correction skipped: {e}")
 print(f"Camera ready. Stream at http://{PI_IP}:{CAMERA_PORT}/mjpg")
 
 # ── Sensor polling thread (10Hz) ───────────────────────────────────────────────
