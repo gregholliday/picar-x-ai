@@ -1016,7 +1016,7 @@
         <div class="task-input-row">
           <input class="task-input" type="text" id="task-input"
             placeholder="Give the car a task... e.g. find the purple flag"
-            onkeydown="if(event.key==='Enter') setTask()" />
+            onkeydown="event.stopPropagation(); if(event.key==='Enter') setTask()" />
           <button class="btn-task" onclick="setTask()">SET</button>
           <button class="btn-task btn-task-clear" onclick="clearTask()">CLR</button>
         </div>
