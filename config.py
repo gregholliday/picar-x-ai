@@ -3,14 +3,8 @@
 # This is the only file you need to edit for basic configuration.
 
 # ── Network ────────────────────────────────────────────────────────────────────
-PI_IP        = "YOUR_PI_IP"       # IP address of your Raspberry Pi
-OLLAMA_IP    = "YOUR_OLLAMA_IP"   # IP of machine running Ollama (optional)
 OLLAMA_PORT  = 11434
-OLLAMA_MODEL = "gemma3"
-
-# ── Pi Username ────────────────────────────────────────────────────────────────
-# Your username on the Raspberry Pi (default is 'pi')
-PI_USERNAME  = "pi"
+OLLAMA_MODEL = "qen2.5vl:latest"
 
 # ── Agent Settings ─────────────────────────────────────────────────────────────
 AGENT_PORT   = 8000
@@ -25,7 +19,7 @@ LIDAR_BAUDRATE = 460800
 # Negative = corrects rightward drift (turns wheels slightly left)
 # Positive = corrects leftward drift (turns wheels slightly right)
 # Start with small values (-1, -2, -3) and test until the car drives straight.
-STEERING_TRIM = 0
+STEERING_TRIM = -2
 
 # ── Safety Thresholds ──────────────────────────────────────────────────────────
 # Ultrasonic sensor (cm)
@@ -53,3 +47,11 @@ SIDE_CLEAR    = 300     # Minimum side clearance for turns
 # If left/right readings are swapped, set this to True
 # Test: place object on RIGHT side, check if 'right' value is small
 LIDAR_SWAP_LR = False
+
+# ── Local Overrides ────────────────────────────────────────────────────────────
+# Load machine-specific settings from config_local.py if it exists.
+# This file is gitignored — put your IPs, credentials, and tuned values here.
+try:
+    from config_local import *  # noqa: F401,F403
+except ImportError:
+    pass
