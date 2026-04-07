@@ -47,3 +47,11 @@ SIDE_CLEAR    = 300     # Minimum side clearance for turns
 # If left/right readings are swapped, set this to True
 # Test: place object on RIGHT side, check if 'right' value is small
 LIDAR_SWAP_LR = False
+
+# ── Local Overrides ────────────────────────────────────────────────────────────
+# Load machine-specific settings from config_local.py if it exists.
+# This file is gitignored — put your IPs, credentials, and tuned values here.
+try:
+    from config_local import *  # noqa: F401,F403
+except ImportError:
+    pass
