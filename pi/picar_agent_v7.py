@@ -333,7 +333,9 @@ def get_status():
         "task_status":        "IDLE",
         "task_found":         False,
         "vision_description": "",
-        "vision_hint":        "none",              
+        "vision_hint":        "none",       
+        "navigator_decision": "IDLE",
+        "navigator_log":      []               
     }
 
 @app.get("/api/sensors")
@@ -458,6 +460,20 @@ def shutdown():
     Vilib.camera_close()
     subprocess.Popen(['sudo', 'shutdown', 'now'])
     return {"status": "shutting_down"}
+
+# ── Vision endpoints ───────────────────────────────────────────────────────────
+@app.post("/api/vision/update")
+def update_vision(description: str = "", hint: str = "none"):
+    state["vision_description"] = description
+    state["vision_hint"]        = hint
+    return {"status": "ok"}
+
+@app.get("/api/vision")
+def get_vision():
+    return {
+        "description": state["vision_description"],
+        "hint":        state["vision_hint"],
+    }
 
 # Add new endpoint
 @app.post("/api/navigator/decision")
