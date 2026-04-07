@@ -240,7 +240,7 @@ Choose HINT based on:
                 "prompt": prompt,
                 "images": [image_b64],
                 "stream": False
-            }, timeout=15)
+            }, timeout=30)
 
             text = response.json().get('response', '')
 
