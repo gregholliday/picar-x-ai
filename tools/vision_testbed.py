@@ -47,7 +47,7 @@ try:
     OLLAMA_URL = f"http://{OLLAMA_IP}:{OLLAMA_PORT}/api/generate"
     CAMERA_URL = f"http://{PI_IP}:{CAMERA_PORT}/mjpg"
     AGENT_URL  = f"http://{PI_IP}:{AGENT_PORT}"
-    print(f"Config loaded. Ollama: {OLLAMA_URL}")
+    print(f"Config loaded. Ollama: {OLLAMA_URL} Camera: {CAMERA_URL}")
 except ImportError:
     print("config.py not found — using defaults")
     OLLAMA_URL            = "http://localhost:11434/api/generate"
