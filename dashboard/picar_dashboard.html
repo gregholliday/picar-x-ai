@@ -1509,15 +1509,12 @@
 
         const dec = data.decision || 'IDLE';
         const display = document.getElementById('decision-display');
-        display.textContent = dec.replace(/_/g, ' ');
-        display.className   = `decision-value ${dec}`;
-
-        const navMode = document.getElementById('nav-mode-display');
-        if (navMode && data.mode) {
-          navMode.textContent = data.mode.toUpperCase();
-          navMode.className   = `mode-value ${data.mode}`;
+        if (display) {
+          display.textContent = dec.replace(/_/g, ' ');
+          display.className   = `decision-value ${dec.split(' ')[0]}`;
         }
 
+        // Update decision log
         const log = document.getElementById('decision-log');
         if (log && data.log && data.log.length > 0) {
           log.innerHTML = [...data.log].reverse().map(entry => `
@@ -1530,7 +1527,30 @@
       } catch(e) {}
     }
 
+    async function pollMode() {
+      try {
+        const res  = await fetch(`${AGENT_URL}/api/status`);
+        const data = await res.json();
+        const mode = data.mode || 'manual';
+
+        // Update main mode display
+        const mainMode = document.getElementById('mode-display');
+        if (mainMode) {
+          mainMode.textContent = mode.toUpperCase();
+          mainMode.className   = `mode-value ${mode}`;
+        }
+
+        // Update navigator panel mode display
+        const navMode = document.getElementById('nav-mode-display');
+        if (navMode) {
+          navMode.textContent = mode.toUpperCase();
+          navMode.className   = `mode-value ${mode}`;
+        }
+      } catch(e) {}
+    }
+
     setInterval(pollNavigator, 1000);
+    setInterval(pollMode,      1000);
     setInterval(pollTask,      2000);
     setInterval(pollVision,    3000);
     pollNavigator();

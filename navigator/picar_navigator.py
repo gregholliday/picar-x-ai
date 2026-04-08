@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
 """
-PiCar-X Navigator with Gemma 3 Vision and Goal-Directed Navigation
+PiCar-X Navigator with Goal-Directed Navigation and Vision
 Runs on Fedora. Polls the Pi agent for sensor data and makes
 autonomous driving decisions. Supports task-based navigation:
-  "find the purple flag", "find the kitchen", etc.
+  "find the red Coca-Cola aluminum can"
+  "find the copper tea kettle"
+  etc.
+
+State machine:
+  IDLE        → no task set, standard obstacle avoidance
+  SEARCHING   → task set, target not seen, drive+rotate pattern
+  LOCKING     → first detection received, car stops, waits for confirmation
+  APPROACHING → target confirmed, drive toward it
+  GOAL_REACHED→ close enough, stop and honk
 
 Usage:
     python3 picar_navigator.py
-
-    The PiCar must be in AUTONOMOUS mode via the dashboard
-    before the navigator will send any drive commands.
+    The PiCar must be in AUTONOMOUS mode via the dashboard.
     Set a task via the dashboard task input field.
 """
 
@@ -35,41 +42,57 @@ try:
         FRONT_CLEAR, FRONT_CAUTION, SIDE_CLEAR,
         OLLAMA_IP, OLLAMA_PORT, OLLAMA_MODEL,
     )
+    try:
+        from config import (VISION_ENABLED, VISION_INTERVAL, VISION_TIMEOUT,
+                            TARGET_CONFIRM_NEEDED, APPROACH_STOP_CM,
+                            SEARCH_FORWARD_STEPS, SEARCH_ROTATE_STEPS)
+    except ImportError:
+        VISION_ENABLED        = True
+        VISION_INTERVAL       = 3
+        VISION_TIMEOUT        = 30
+        TARGET_CONFIRM_NEEDED = 2
+        APPROACH_STOP_CM      = 30
+        SEARCH_FORWARD_STEPS  = 25
+        SEARCH_ROTATE_STEPS   = 15
+
     AGENT_URL  = f"http://{PI_IP}:{AGENT_PORT}"
     CAMERA_URL = f"http://{PI_IP}:{CAMERA_PORT}/mjpg"
     OLLAMA_URL = f"http://{OLLAMA_IP}:{OLLAMA_PORT}/api/generate"
-    print(f"Config loaded from config.py. Agent URL: {AGENT_URL}")
-except ImportError:
-    print("config.py not found — using defaults.")
-    AGENT_URL     = "http://YOUR_PI_IP:8000"
-    CAMERA_URL    = "http://YOUR_PI_IP:9000/mjpg"
-    OLLAMA_URL    = "http://YOUR_OLLAMA_IP:11434/api/generate"
-    OLLAMA_MODEL  = "gemma3"
-    BASE_SPEED    = 30
-    SLOW_SPEED    = 20
-    TURN_ANGLE    = 35
-    FRONT_CLEAR   = 800
-    FRONT_CAUTION = 500
-    SIDE_CLEAR    = 300
+    print(f"Config loaded. Agent: {AGENT_URL} | Ollama: {OLLAMA_URL} | Model: {OLLAMA_MODEL}")
 
-POLL_INTERVAL = 0.2    # seconds between navigator decisions
+except ImportError as e:
+    print(f"config.py not found ({e}) — using defaults.")
+    AGENT_URL             = "http://YOUR_PI_IP:8000"
+    CAMERA_URL            = "http://YOUR_PI_IP:9000/mjpg"
+    OLLAMA_URL            = "http://YOUR_OLLAMA_IP:11434/api/generate"
+    OLLAMA_MODEL          = "qwen2.5vl:latest"
+    BASE_SPEED            = 30
+    SLOW_SPEED            = 20
+    TURN_ANGLE            = 35
+    FRONT_CLEAR           = 800
+    FRONT_CAUTION         = 500
+    SIDE_CLEAR            = 300
+    VISION_ENABLED        = True
+    VISION_INTERVAL       = 3
+    VISION_TIMEOUT        = 30
+    TARGET_CONFIRM_NEEDED = 2
+    APPROACH_STOP_CM      = 30
+    SEARCH_FORWARD_STEPS  = 25
+    SEARCH_ROTATE_STEPS   = 15
 
-# ── Vision config ──────────────────────────────────────────────────────────────
-VISION_ENABLED       = True
-VISION_INTERVAL      = 3      # seconds between Gemma 3 queries during search
-APPROACH_STOP_CM     = 30     # ultrasonic distance to stop when approaching target
-SEARCH_ROTATE_STEPS  = 15     # number of loop iterations to rotate during search
-SEARCH_FORWARD_STEPS = 25     # number of loop iterations to drive forward during search
+POLL_INTERVAL        = 0.2   # seconds between navigator decisions
+LOCKING_VISION_INTERVAL = 2  # faster vision queries while locking
 
 # ── Vision state ───────────────────────────────────────────────────────────────
 vision_state = {
-    "description": "Waiting for first vision query...",
-    "hint":        "none",
-    "target_seen": False,
-    "target_where": "",       # left, center, right — where in frame
-    "timestamp":   0,
-    "processing":  False,
-    "query_count": 0,
+    "description":          "Waiting for first vision query...",
+    "hint":                 "none",
+    "target_seen":          False,
+    "target_where":         "unknown",
+    "target_confirm_count": 0,
+    "timestamp":            0,
+    "processing":           False,
+    "query_count":          0,
 }
 
 # ── Room map ───────────────────────────────────────────────────────────────────
@@ -81,12 +104,10 @@ robot_y     = GRID_SIZE // 2
 robot_angle = 0.0
 
 # ── Navigator state ────────────────────────────────────────────────────────────
-running       = True
-last_decision = "IDLE"
-decision_log  = deque(maxlen=20)
-
-# Search pattern state
-search_phase        = "forward"   # "forward" or "rotate"
+running             = True
+last_decision       = "IDLE"
+decision_log        = deque(maxlen=20)
+search_phase        = "forward"
 search_step_counter = 0
 
 # ── Logging ────────────────────────────────────────────────────────────────────
@@ -131,11 +152,8 @@ def get_lidar():
 
 def send_drive(speed: int, angle: int):
     try:
-        requests.post(
-            f"{AGENT_URL}/api/drive",
-            params={"speed": speed, "angle": angle},
-            timeout=0.5
-        )
+        requests.post(f"{AGENT_URL}/api/drive",
+                      params={"speed": speed, "angle": angle}, timeout=0.5)
     except Exception as e:
         log(f"Drive command failed: {e}")
 
@@ -147,41 +165,29 @@ def send_stop():
 
 def send_buzzer(sound: str = "horn"):
     try:
-        requests.post(
-            f"{AGENT_URL}/api/buzzer",
-            params={"sound": sound},
-            timeout=1.0
-        )
+        requests.post(f"{AGENT_URL}/api/buzzer",
+                      params={"sound": sound}, timeout=1.0)
     except Exception as e:
         log(f"Buzzer command failed: {e}")
 
 def post_decision(decision: str):
     try:
-        requests.post(
-            f"{AGENT_URL}/api/navigator/decision",
-            params={"decision": decision},
-            timeout=0.5
-        )
+        requests.post(f"{AGENT_URL}/api/navigator/decision",
+                      params={"decision": decision}, timeout=0.5)
     except Exception:
         pass
 
 def post_vision(description: str, hint: str):
     try:
-        requests.post(
-            f"{AGENT_URL}/api/vision/update",
-            params={"description": description, "hint": hint},
-            timeout=0.5
-        )
+        requests.post(f"{AGENT_URL}/api/vision/update",
+                      params={"description": description, "hint": hint}, timeout=0.5)
     except Exception:
         pass
 
 def post_task_status(status: str):
     try:
-        requests.post(
-            f"{AGENT_URL}/api/task/status",
-            params={"status": status},
-            timeout=0.5
-        )
+        requests.post(f"{AGENT_URL}/api/task/status",
+                      params={"status": status}, timeout=0.5)
     except Exception:
         pass
 
@@ -191,8 +197,9 @@ def post_task_found():
     except Exception:
         pass
 
-# ── Vision — capture single JPEG frame ────────────────────────────────────────
+# ── Vision — capture frames ────────────────────────────────────────────────────
 def capture_frame():
+    """Capture a single JPEG frame from the Pi camera stream."""
     try:
         req  = urllib.request.urlopen(CAMERA_URL, timeout=5)
         data = b''
@@ -208,58 +215,100 @@ def capture_frame():
         log(f"Frame capture failed: {e}")
         return None
 
+def capture_best_frame(n=3):
+    """Capture N frames and return the largest (most detail)."""
+    frames = []
+    for i in range(n):
+        frame = capture_frame()
+        if frame:
+            frames.append(frame)
+        if i < n - 1:
+            time.sleep(0.3)
+    return max(frames, key=len) if frames else None
+
+# ── Vision — response parser ───────────────────────────────────────────────────
+def parse_vision_response(text, task):
+    """Parse free-form model response using keyword matching."""
+    text_lower = text.lower()
+
+    stop_words = {'find', 'the', 'a', 'an', 'some', 'look', 'for',
+                  'get', 'locate', 'search', 'seek', 'identify', 'spot'}
+    task_words = [w for w in task.lower().split() if w not in stop_words]
+
+    found = any(word in text_lower for word in task_words)
+
+    negative = any(phrase in text_lower for phrase in [
+        'no ', 'not ', "don't", "doesn't", "can't", 'cannot',
+        'no sign', 'not visible', 'not present', 'not found',
+        'unable to', 'do not see', 'i cannot'
+    ])
+    positive = any(phrase in text_lower for phrase in [
+        'yes', 'i see', 'i can see', 'there is', 'there are',
+        'visible', 'present', 'i found', 'i notice'
+    ])
+    if negative and not positive:
+        found = False
+
+    where = "unknown"
+    if   'left'   in text_lower: where = 'left'
+    elif 'right'  in text_lower: where = 'right'
+    elif any(w in text_lower for w in ['center', 'middle', 'front', 'straight', 'ahead']):
+        where = 'center'
+
+    if found:
+        hint = where if where != 'unknown' else 'forward'
+    else:
+        if   'left'  in text_lower: hint = 'left'
+        elif 'right' in text_lower: hint = 'right'
+        else:                        hint = 'forward'
+
+    high_conf = found and any(p in text_lower for p in [
+        'yes', 'i can see', 'i see', 'there is', 'clearly',
+        'definitely', 'confident', 'visible', 'present', 'i found'
+    ])
+    confidence = 'HIGH' if high_conf else ('MEDIUM' if found else 'LOW')
+
+    return found, where, hint, confidence
+
 # ── Vision — navigation query (no task) ───────────────────────────────────────
 def query_vision_navigation():
-    """Standard navigation hint when no task is set."""
+    """Standard scene description for navigation hints when no task is set."""
     if vision_state["processing"]:
         return
-
     vision_state["processing"] = True
 
     def run():
         try:
-            frame = capture_frame()
+            frame = capture_best_frame()
             if frame is None:
                 return
 
             image_b64 = base64.b64encode(frame).decode()
-
-            prompt = """You are a navigation assistant for a small robot car.
-Look at this camera image and respond in this EXACT format with no extra text:
-DESCRIPTION: [one sentence describing what you see, focusing on obstacles and open paths]
-HINT: [exactly one word: forward, left, right, or stop]
-
-Choose HINT based on:
-- forward: clear path ahead
-- left: obstacle ahead, more space on left
-- right: obstacle ahead, more space on right
-- stop: blocked in all directions"""
+            prompt = """Look at this camera image and answer briefly:
+1. What obstacles or objects are ahead?
+2. Is the path clear to drive forward?
+3. Which direction (left, right, or forward) is most open?"""
 
             response = requests.post(OLLAMA_URL, json={
-                "model":  OLLAMA_MODEL,
-                "prompt": prompt,
-                "images": [image_b64],
-                "stream": False
-            }, timeout=30)
+                "model": OLLAMA_MODEL, "prompt": prompt,
+                "images": [image_b64], "stream": False
+            }, timeout=VISION_TIMEOUT)
 
             text = response.json().get('response', '')
+            text_lower = text.lower()
 
-            desc = ""
-            hint = "none"
-            for line in text.strip().split('\n'):
-                if line.startswith('DESCRIPTION:'):
-                    desc = line.replace('DESCRIPTION:', '').strip()
-                elif line.startswith('HINT:'):
-                    raw = line.replace('HINT:', '').strip().lower()
-                    if raw in ['forward', 'left', 'right', 'stop']:
-                        hint = raw
+            hint = "forward"
+            if   'left'    in text_lower: hint = 'left'
+            elif 'right'   in text_lower: hint = 'right'
+            elif 'blocked' in text_lower or 'stop' in text_lower: hint = 'stop'
 
-            vision_state["description"] = desc
-            vision_state["hint"]        = hint
-            vision_state["timestamp"]   = time.time()
+            desc = text[:150].replace('\n', ' ')
+            vision_state["description"]  = desc
+            vision_state["hint"]         = hint
+            vision_state["timestamp"]    = time.time()
             vision_state["query_count"] += 1
 
-            log(f"Vision [{vision_state['query_count']}]: {desc} → hint={hint}")
+            log(f"Vision nav [{vision_state['query_count']}]: hint={hint} | {desc[:80]}")
             post_vision(desc, hint)
 
         except Exception as e:
@@ -272,71 +321,62 @@ Choose HINT based on:
 # ── Vision — goal detection query ─────────────────────────────────────────────
 def query_vision_goal(task: str):
     """
-    Check if the target described in task is visible in the current frame.
-    Updates vision_state["target_seen"] and vision_state["target_where"].
+    Ask the vision model if the target is visible.
+    Natural language prompt + keyword parsing.
+    Runs in background thread — never blocks navigation.
     """
     if vision_state["processing"]:
         return
-
     vision_state["processing"] = True
 
     def run():
         try:
-            frame = capture_frame()
+            frame = capture_best_frame(n=3)
             if frame is None:
                 return
 
             image_b64 = base64.b64encode(frame).decode()
+            prompt = f"""Look carefully at this image and answer these questions:
+1. What objects do you see on the floor or in the scene?
+2. Do you see: {task}?
+3. If yes, is it on the LEFT, CENTER, or RIGHT side of the image?
+4. What direction should a robot move to get closer to it?
 
-            prompt = f"""You are a navigation assistant for a small robot car.
-The robot is looking for: {task}
-
-Look at this camera image and respond in this EXACT format with no extra text:
-DESCRIPTION: [one sentence describing what you see]
-FOUND: [YES or NO — is the target visible?]
-WHERE: [if found: LEFT, CENTER, or RIGHT side of the image. If not found: UNKNOWN]
-HINT: [one word for navigation: forward, left, right, or stop]
-
-Be accurate. Only say YES if you are confident the target is visible."""
+Be specific and concise."""
 
             response = requests.post(OLLAMA_URL, json={
-                "model":  OLLAMA_MODEL,
-                "prompt": prompt,
-                "images": [image_b64],
-                "stream": False
-            }, timeout=15)
+                "model": OLLAMA_MODEL, "prompt": prompt,
+                "images": [image_b64], "stream": False
+            }, timeout=VISION_TIMEOUT)
 
-            text = response.json().get('response', '')
+            text  = response.json().get('response', '')
+            found, where, hint, confidence = parse_vision_response(text, task)
 
-            desc        = ""
-            found       = False
-            where       = "unknown"
-            hint        = "none"
+            if found and confidence in ("HIGH", "MEDIUM"):
+                vision_state["target_confirm_count"] += 1
+            else:
+                if vision_state["target_confirm_count"] > 0:
+                    log(f"Confirmation reset (was {vision_state['target_confirm_count']})")
+                vision_state["target_confirm_count"] = 0
+                vision_state["target_seen"]          = False
 
-            for line in text.strip().split('\n'):
-                if line.startswith('DESCRIPTION:'):
-                    desc = line.replace('DESCRIPTION:', '').strip()
-                elif line.startswith('FOUND:'):
-                    found = 'YES' in line.upper()
-                elif line.startswith('WHERE:'):
-                    raw_where = line.replace('WHERE:', '').strip().upper()
-                    if raw_where in ['LEFT', 'CENTER', 'RIGHT']:
-                        where = raw_where.lower()
-                elif line.startswith('HINT:'):
-                    raw = line.replace('HINT:', '').strip().lower()
-                    if raw in ['forward', 'left', 'right', 'stop']:
-                        hint = raw
+            if vision_state["target_confirm_count"] >= TARGET_CONFIRM_NEEDED:
+                if not vision_state["target_seen"]:
+                    log(f"🎯 Target confirmed after "
+                        f"{vision_state['target_confirm_count']} detections!")
+                vision_state["target_seen"] = True
 
-            vision_state["description"]  = desc
-            vision_state["target_seen"]  = found
-            vision_state["target_where"] = where
+            vision_state["description"]  = text[:150].replace('\n', ' ')
             vision_state["hint"]         = hint
+            vision_state["target_where"] = where
             vision_state["timestamp"]    = time.time()
             vision_state["query_count"] += 1
 
-            status = f"FOUND at {where}" if found else "NOT FOUND"
-            log(f"Goal [{vision_state['query_count']}]: {desc} → {status}")
-            post_vision(desc, hint)
+            status = (f"FOUND at {where} (conf={confidence}, "
+                      f"confirms={vision_state['target_confirm_count']}/{TARGET_CONFIRM_NEEDED})"
+                      if found else "NOT FOUND")
+            log(f"Vision goal [{vision_state['query_count']}]: {status}")
+            post_vision(vision_state["description"], hint)
 
         except Exception as e:
             log(f"Vision goal query failed: {e}")
@@ -348,31 +388,23 @@ Be accurate. Only say YES if you are confident the target is visible."""
 # ── Room mapping ───────────────────────────────────────────────────────────────
 def update_map(scan, rx, ry, heading_deg):
     for point in scan:
-        angle_deg = point["angle"]
-        dist_mm   = point["distance"]
+        dist_mm = point["distance"]
         if dist_mm <= 0 or dist_mm > 5000:
             continue
-        world_angle = math.radians(heading_deg + angle_deg)
-        dx = dist_mm * math.sin(world_angle) / GRID_RES
-        dy = dist_mm * math.cos(world_angle) / GRID_RES
-        gx = int(rx + dx)
-        gy = int(ry - dy)
+        world_angle = math.radians(heading_deg + point["angle"])
+        gx = int(rx + dist_mm * math.sin(world_angle) / GRID_RES)
+        gy = int(ry - dist_mm * math.cos(world_angle) / GRID_RES)
         if 0 <= gx < GRID_SIZE and 0 <= gy < GRID_SIZE:
             grid[gy][gx] = min(grid[gy][gx] + 1, 10)
 
 def save_map():
     try:
-        map_data = {
-            "grid":        grid,
-            "robot_x":     robot_x,
-            "robot_y":     robot_y,
-            "robot_angle": robot_angle,
-            "grid_size":   GRID_SIZE,
-            "grid_res_mm": GRID_RES,
-            "timestamp":   datetime.now().isoformat()
-        }
         with open("/tmp/picar_map.json", "w") as f:
-            json.dump(map_data, f)
+            json.dump({
+                "grid": grid, "robot_x": robot_x, "robot_y": robot_y,
+                "robot_angle": robot_angle, "grid_size": GRID_SIZE,
+                "grid_res_mm": GRID_RES, "timestamp": datetime.now().isoformat()
+            }, f)
     except Exception as e:
         log(f"Map save failed: {e}")
 
@@ -381,11 +413,8 @@ def decide_navigate(sensors):
     """Standard obstacle avoidance with vision hint as tiebreaker."""
     global robot_angle
 
-    if sensors.get("reflex_active"):
-        return 0, 0, "REFLEX_OVERRIDE"
-
-    if sensors.get("cliff_detected"):
-        return -20, 0, "CLIFF_BACKUP"
+    if sensors.get("reflex_active"):  return 0, 0, "REFLEX_OVERRIDE"
+    if sensors.get("cliff_detected"): return -SLOW_SPEED, 0, "CLIFF_BACKUP"
 
     lidar  = sensors.get("lidar", {})
     front  = lidar.get("front", 9999)
@@ -393,62 +422,43 @@ def decide_navigate(sensors):
     right  = lidar.get("right", 9999)
     back   = lidar.get("back",  9999)
     us_cm  = sensors.get("ultrasonic_cm", 999)
+    us_mm  = us_cm * 10
+    efront = min(front, us_mm) if us_mm > 0 else front
+    hint   = vision_state["hint"] if VISION_ENABLED else "none"
 
-    us_mm = us_cm * 10
-    effective_front = min(front, us_mm) if us_mm > 0 else front
-    hint = vision_state["hint"] if VISION_ENABLED else "none"
-
-    if effective_front > FRONT_CLEAR:
-        return BASE_SPEED, 0, "FORWARD"
-
-    if effective_front > FRONT_CAUTION:
-        return SLOW_SPEED, 0, "FORWARD_SLOW"
+    if efront > FRONT_CLEAR:   return BASE_SPEED, 0, "FORWARD"
+    if efront > FRONT_CAUTION: return SLOW_SPEED, 0, "FORWARD_SLOW"
 
     if left > right and left > SIDE_CLEAR:
         robot_angle = (robot_angle - 35) % 360
         suffix = " (vision)" if hint == 'left' else ""
         return SLOW_SPEED, -TURN_ANGLE, f"TURN_LEFT{suffix}"
-
     elif right > left and right > SIDE_CLEAR:
         robot_angle = (robot_angle + 35) % 360
         suffix = " (vision)" if hint == 'right' else ""
         return SLOW_SPEED, TURN_ANGLE, f"TURN_RIGHT{suffix}"
-
     elif left > SIDE_CLEAR and right > SIDE_CLEAR:
         if hint == 'right':
             robot_angle = (robot_angle + 35) % 360
             return SLOW_SPEED, TURN_ANGLE, "TURN_RIGHT (vision)"
-        else:
-            robot_angle = (robot_angle - 35) % 360
-            return SLOW_SPEED, -TURN_ANGLE, "TURN_LEFT (vision)"
-
-    elif left > SIDE_CLEAR:
+        robot_angle = (robot_angle - 35) % 360
+        return SLOW_SPEED, -TURN_ANGLE, "TURN_LEFT (vision)"
+    elif left  > SIDE_CLEAR:
         robot_angle = (robot_angle - 35) % 360
         return SLOW_SPEED, -TURN_ANGLE, "TURN_LEFT"
-
     elif right > SIDE_CLEAR:
         robot_angle = (robot_angle + 35) % 360
         return SLOW_SPEED, TURN_ANGLE, "TURN_RIGHT"
-
-    elif back > 300:
-        return -SLOW_SPEED, 0, "REVERSE"
-
-    else:
-        return 0, 0, "STUCK"
+    elif back > 300: return -SLOW_SPEED, 0, "REVERSE"
+    else:            return 0, 0, "STUCK"
 
 # ── Navigation — search pattern ────────────────────────────────────────────────
 def decide_search(sensors):
-    """
-    Search pattern: drive forward avoiding obstacles, then rotate to scan.
-    Alternates between FORWARD and ROTATE phases.
-    """
+    """Drive forward avoiding obstacles, then rotate to scan."""
     global search_phase, search_step_counter, robot_angle
 
-    if sensors.get("reflex_active"):
-        return 0, 0, "REFLEX_OVERRIDE"
-
-    if sensors.get("cliff_detected"):
-        return -20, 0, "CLIFF_BACKUP"
+    if sensors.get("reflex_active"):  return 0, 0, "REFLEX_OVERRIDE"
+    if sensors.get("cliff_detected"): return -SLOW_SPEED, 0, "CLIFF_BACKUP"
 
     lidar  = sensors.get("lidar", {})
     front  = lidar.get("front", 9999)
@@ -456,19 +466,17 @@ def decide_search(sensors):
     right  = lidar.get("right", 9999)
     us_cm  = sensors.get("ultrasonic_cm", 999)
     us_mm  = us_cm * 10
-    effective_front = min(front, us_mm) if us_mm > 0 else front
+    efront = min(front, us_mm) if us_mm > 0 else front
 
     search_step_counter += 1
 
     if search_phase == "forward":
-        # Drive forward, avoiding obstacles
         if search_step_counter >= SEARCH_FORWARD_STEPS:
             search_phase        = "rotate"
             search_step_counter = 0
             log("Search: switching to ROTATE phase")
 
-        # Still need to avoid obstacles while searching
-        if effective_front < FRONT_CAUTION:
+        if efront < FRONT_CAUTION:
             if left > right and left > SIDE_CLEAR:
                 return SLOW_SPEED, -TURN_ANGLE, "SEARCH_TURN_LEFT"
             elif right > SIDE_CLEAR:
@@ -480,90 +488,90 @@ def decide_search(sensors):
 
         return SLOW_SPEED, 0, "SEARCHING_FORWARD"
 
-    else:  # rotate phase
+    else:  # rotate
         if search_step_counter >= SEARCH_ROTATE_STEPS:
             search_phase        = "forward"
             search_step_counter = 0
             log("Search: switching to FORWARD phase")
 
-        # Rotate in place to scan environment
         robot_angle = (robot_angle + 35) % 360
         return 0, TURN_ANGLE, "SEARCHING_ROTATE"
+
+# ── Navigation — locking (first detection, car stopped) ───────────────────────
+def decide_lock(sensors):
+    """
+    Car stops completely and waits for vision confirmation.
+    First detection received — hold position until TARGET_CONFIRM_NEEDED met.
+    """
+    if sensors.get("cliff_detected"): return -SLOW_SPEED, 0, "CLIFF_BACKUP"
+    # Stay stopped — let the vision thread confirm
+    return 0, 0, "LOCKING"
 
 # ── Navigation — approach target ───────────────────────────────────────────────
 def decide_approach(sensors):
     """
-    Move toward the target using vision hint for steering.
-    Stop when ultrasonic detects we're close enough.
+    Move toward the confirmed target.
+    Steers gently based on WHERE target was last seen.
+    Stops when ultrasonic reads close enough.
     """
-    if sensors.get("reflex_active"):
-        return 0, 0, "REFLEX_OVERRIDE"
-
-    if sensors.get("cliff_detected"):
-        return -20, 0, "CLIFF_BACKUP"
+    if sensors.get("reflex_active"):  return 0, 0, "REFLEX_OVERRIDE"
+    if sensors.get("cliff_detected"): return -SLOW_SPEED, 0, "CLIFF_BACKUP"
 
     us_cm  = sensors.get("ultrasonic_cm", 999)
     lidar  = sensors.get("lidar", {})
     front  = lidar.get("front", 9999)
     us_mm  = us_cm * 10
-    effective_front = min(front, us_mm) if us_mm > 0 else front
+    efront = min(front, us_mm) if us_mm > 0 else front
 
-    # Close enough — goal reached!
+    # Close enough — done!
     if 0 < us_cm <= APPROACH_STOP_CM:
         return 0, 0, "GOAL_REACHED"
 
-    # Steer toward target based on where it is in the frame
+    # Steer gently to keep target centered in frame
     where = vision_state.get("target_where", "center")
-    if where == "left":
-        angle = -int(TURN_ANGLE * 0.5)   # gentle left
-    elif where == "right":
-        angle = int(TURN_ANGLE * 0.5)    # gentle right
-    else:
-        angle = 0                          # straight ahead
+    if   where == "left":  angle = -int(TURN_ANGLE * 0.4)
+    elif where == "right": angle =  int(TURN_ANGLE * 0.4)
+    else:                  angle = 0
 
-    # Slow down if getting close
-    if effective_front < FRONT_CAUTION:
+    if efront < FRONT_CAUTION:
         return SLOW_SPEED, angle, "APPROACHING_SLOW"
-
     return BASE_SPEED, angle, "APPROACHING"
 
 # ── Update robot position estimate ─────────────────────────────────────────────
 def update_position(speed, angle, dt):
     global robot_x, robot_y, robot_angle
-    if speed == 0:
-        return
+    if speed == 0: return
     dist_mm = (speed / 100.0) * 500 * dt
     if abs(angle) > 5:
         robot_angle = (robot_angle + angle * 0.1) % 360
     rad = math.radians(robot_angle)
-    robot_x += int(dist_mm * math.sin(rad) / GRID_RES)
-    robot_y -= int(dist_mm * math.cos(rad) / GRID_RES)
-    robot_x = max(1, min(GRID_SIZE - 2, robot_x))
-    robot_y = max(1, min(GRID_SIZE - 2, robot_y))
+    robot_x = max(1, min(GRID_SIZE-2, robot_x + int(dist_mm * math.sin(rad) / GRID_RES)))
+    robot_y = max(1, min(GRID_SIZE-2, robot_y - int(dist_mm * math.cos(rad) / GRID_RES)))
 
 # ── Main loop ──────────────────────────────────────────────────────────────────
 def main():
     global last_decision, running, search_phase, search_step_counter
 
     log("PiCar Navigator starting...")
-    log(f"Agent URL:    {AGENT_URL}")
-    log(f"Camera URL:   {CAMERA_URL}")
-    log(f"Ollama URL:   {OLLAMA_URL}")
-    log(f"Vision:       {'ENABLED' if VISION_ENABLED else 'DISABLED'} (every {VISION_INTERVAL}s)")
-    log(f"Thresholds:   front_clear={FRONT_CLEAR}mm, front_caution={FRONT_CAUTION}mm")
-    log(f"Speed:        base={BASE_SPEED}, slow={SLOW_SPEED}")
-    log(f"Approach stop: {APPROACH_STOP_CM}cm")
-    log("Waiting for agent to be in AUTONOMOUS mode...")
+    log(f"Agent:    {AGENT_URL}")
+    log(f"Camera:   {CAMERA_URL}")
+    log(f"Ollama:   {OLLAMA_URL}")
+    log(f"Model:    {OLLAMA_MODEL}")
+    log(f"Vision:   {'ENABLED' if VISION_ENABLED else 'DISABLED'} "
+        f"every {VISION_INTERVAL}s, timeout={VISION_TIMEOUT}s")
+    log(f"Confirm:  {TARGET_CONFIRM_NEEDED} consecutive detections needed")
+    log(f"Approach: stop at {APPROACH_STOP_CM}cm")
+    log(f"Speed:    base={BASE_SPEED}, slow={SLOW_SPEED}")
+    log("Waiting for AUTONOMOUS mode...")
 
-    map_save_counter  = 0
-    last_vision_time  = 0
-    goal_reached      = False
+    map_save_counter = 0
+    last_vision_time = 0
+    goal_reached     = False
 
     while running:
         loop_start = time.time()
 
         try:
-            # Check agent is reachable and in autonomous mode
             status = get_status()
             if status is None:
                 log("Agent unreachable — waiting...")
@@ -572,49 +580,54 @@ def main():
 
             if status.get("mode") != "autonomous":
                 if last_decision != "IDLE":
-                    log("Not in autonomous mode — navigator idling.")
+                    log("Not in autonomous mode — idling.")
                     last_decision = "IDLE"
                     goal_reached  = False
                     search_phase  = "forward"
                     search_step_counter = 0
-                    vision_state["target_seen"] = False
+                    vision_state["target_seen"]          = False
+                    vision_state["target_confirm_count"] = 0
                 time.sleep(0.5)
                 continue
 
-            # Get current task
-            task_data = get_task()
-            task      = task_data.get("task", "") if task_data else ""
-            task_status = task_data.get("status", "IDLE") if task_data else "IDLE"
+            task_data   = get_task()
+            task        = task_data.get("task", "")   if task_data else ""
+            task_status = task_data.get("status", "") if task_data else ""
 
-            # Reset if task was cleared
+            # Reset on task clear
             if not task and goal_reached:
                 goal_reached = False
-                vision_state["target_seen"] = False
-                search_phase = "forward"
+                vision_state["target_seen"]          = False
+                vision_state["target_confirm_count"] = 0
+                search_phase        = "forward"
                 search_step_counter = 0
 
-            # Don't keep driving after goal reached
+            # Hold after goal reached
             if goal_reached or task_status == "GOAL_REACHED":
                 if last_decision != "GOAL_REACHED":
-                    log(f"Task complete! '{task}' — waiting for new task.")
+                    log("Task complete — waiting for new task.")
                     last_decision = "GOAL_REACHED"
                 time.sleep(0.5)
                 continue
 
-            # Get sensor data
             sensors = get_sensors()
             if sensors is None:
                 time.sleep(POLL_INTERVAL)
                 continue
 
-            # Get full LiDAR scan for mapping
             scan = get_lidar()
             if scan:
                 update_map(scan, robot_x, robot_y, robot_angle)
 
             # ── Vision queries ─────────────────────────────────────────────────
             now = time.time()
-            if VISION_ENABLED and (now - last_vision_time >= VISION_INTERVAL):
+            confirms = vision_state["target_confirm_count"]
+
+            # Use faster interval when locking (car stopped, need quick confirmation)
+            interval = LOCKING_VISION_INTERVAL if (0 < confirms < TARGET_CONFIRM_NEEDED) \
+                       else VISION_INTERVAL
+
+            if VISION_ENABLED and (now - last_vision_time >= interval):
                 if task:
                     query_vision_goal(task)
                 else:
@@ -627,18 +640,15 @@ def main():
                 speed, angle, decision = decide_navigate(sensors)
 
             elif vision_state["target_seen"]:
-                # Target visible — approach it
+                # Fully confirmed — approach
                 speed, angle, decision = decide_approach(sensors)
                 post_task_status("APPROACHING")
 
-                # Check if we reached it
                 if decision == "GOAL_REACHED":
                     log(f"🎯 GOAL REACHED: '{task}'")
                     send_stop()
                     goal_reached = True
                     post_task_found()
-
-                    # Celebrate — honk twice and flash dashboard
                     def celebrate():
                         time.sleep(0.3)
                         send_buzzer("horn")
@@ -646,31 +656,35 @@ def main():
                         send_buzzer("horn")
                     threading.Thread(target=celebrate, daemon=True).start()
 
+            elif vision_state["target_confirm_count"] > 0:
+                # First detection received — STOP and wait for confirmation
+                speed, angle, decision = decide_lock(sensors)
+                post_task_status("LOCKING")
+
             else:
-                # Task set but target not seen — search
+                # No detection yet — keep searching
                 speed, angle, decision = decide_search(sensors)
                 post_task_status("SEARCHING")
 
-            # Log and post decision if changed
+            # Log and post decision changes
             if decision != last_decision:
-                lidar_data = sensors.get('lidar', {})
+                lidar = sensors.get('lidar', {})
                 log(f"Decision: {last_decision} → {decision} "
-                    f"(F:{lidar_data.get('front', 0):.0f}mm "
-                    f"L:{lidar_data.get('left', 0):.0f}mm "
-                    f"R:{lidar_data.get('right', 0):.0f}mm "
-                    f"US:{sensors.get('ultrasonic_cm', 0):.1f}cm "
+                    f"(F:{lidar.get('front',0):.0f} "
+                    f"L:{lidar.get('left',0):.0f} "
+                    f"R:{lidar.get('right',0):.0f} "
+                    f"US:{sensors.get('ultrasonic_cm',0):.1f}cm "
                     f"vision={vision_state['hint']} "
-                    f"target={'YES' if vision_state['target_seen'] else 'NO'})")
+                    f"seen={vision_state['target_seen']} "
+                    f"confirms={vision_state['target_confirm_count']})")
                 last_decision = decision
                 post_decision(decision)
 
-            # Send drive command (unless goal reached)
             if not goal_reached:
                 send_drive(speed, angle)
 
             update_position(speed, angle, POLL_INTERVAL)
 
-            # Save map every 10 loops
             map_save_counter += 1
             if map_save_counter >= 10:
                 save_map()
@@ -686,10 +700,10 @@ def main():
         sleep_time = max(0, POLL_INTERVAL - elapsed)
         time.sleep(sleep_time)
 
-    log("Navigator stopping — sending stop command...")
+    log("Stopping — sending stop command...")
     send_stop()
     save_map()
-    log("Navigator stopped. Final map saved to /tmp/picar_map.json")
+    log("Navigator stopped.")
 
 if __name__ == "__main__":
     try:
