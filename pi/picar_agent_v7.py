@@ -155,16 +155,16 @@ Vilib.display(local=False, web=True)
 time.sleep(5)
 # Fix OV5647 pink/red colour cast
 # Read what AWB settled on
-controls = Vilib.get_controls()
-awb_gains = controls.get('ColourGains', (1.4, 1.6))
-print(f"AWB settled on: {awb_gains}")
+#controls = Vilib.get_controls()
+#awb_gains = controls.get('ColourGains', (1.4, 1.6))
+#print(f"AWB settled on: {awb_gains}")
 
 # Lock those gains so they don't drift
-Vilib.set_controls({
-    "ColourGains": awb_gains,
-    "AnalogueGain": 2.0
-})
-print("Camera colour locked.")
+#Vilib.set_controls({
+#    "ColourGains": awb_gains,
+#    "AnalogueGain": 2.0
+#})
+#print("Camera colour locked.")
 print(f"Camera ready. Stream at http://{PI_IP}:{CAMERA_PORT}/mjpg")
 
 # ── Sensor polling thread (10Hz) ───────────────────────────────────────────────
@@ -180,7 +180,8 @@ def sensor_worker():
             if gs:
                 state["grayscale"] = gs
 
-            state["cliff_detected"] = any(v < CLIFF_STOP for v in state["grayscale"])
+            valid_gs = [v for v in state["grayscale"] if v > 0]  # filter zero readings
+            state["cliff_detected"] = sum(v < CLIFF_STOP for v in valid_gs) >= 2
             state["obstacle_close"] = 0 < state["ultrasonic_cm"] < ULTRASONIC_STOP
 
         except Exception as e:
@@ -225,7 +226,7 @@ def reflex_worker():
                     px.stop()
                 elif lidar_front < 300 and state["speed"] > 0:
                     px.forward(20)
-                    state["reflex_active"] = True
+                    #state["reflex_active"] = True
                     state["speed"] = 20
                     print(f"REFLEX: LiDAR front {lidar_front}mm — slowing to 20.")
                 elif 0 < us_cm < ULTRASONIC_STOP:
