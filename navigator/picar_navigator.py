@@ -514,7 +514,6 @@ def decide_approach(sensors):
     Steers gently based on WHERE target was last seen.
     Stops when ultrasonic reads close enough.
     """
-    if sensors.get("reflex_active"):  return 0, 0, "REFLEX_OVERRIDE"
     if sensors.get("cliff_detected"): return -SLOW_SPEED, 0, "CLIFF_BACKUP"
 
     us_cm  = sensors.get("ultrasonic_cm", 999)
@@ -523,14 +522,18 @@ def decide_approach(sensors):
     us_mm  = us_cm * 10
     efront = min(front, us_mm) if us_mm > 0 else front
 
-    # Close enough — done!
-    if 0 < us_cm <= APPROACH_STOP_CM:
+    where = vision_state.get("target_where", "center")
+
+    # Only stop if target is roughly centered AND we're close
+    # If target is left/right, keep steering — don't stop for side obstacles
+    target_centered = where in ("center", "unknown")
+
+    if target_centered and 0 < us_cm <= APPROACH_STOP_CM:
         return 0, 0, "GOAL_REACHED"
 
-    # Steer gently to keep target centered in frame
-    where = vision_state.get("target_where", "center")
-    if   where == "left":  angle = -int(TURN_ANGLE * 0.4)
-    elif where == "right": angle =  int(TURN_ANGLE * 0.4)
+    # Steer toward target
+    if   where == "left":  angle = -TURN_ANGLE   # stronger left turn
+    elif where == "right": angle =  TURN_ANGLE   # stronger right turn
     else:                  angle = 0
 
     if efront < FRONT_CAUTION:
