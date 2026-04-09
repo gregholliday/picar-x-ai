@@ -18,8 +18,9 @@ Key design decisions:
   - When LOCKING, the car stops completely facing the target
   - When confirmed, the heading at that moment is locked
   - APPROACHING drives toward the locked heading
-  - Vision WHERE is used only for micro-corrections (±7°)
-  - This prevents the car from turning away from target on approach
+  - Vision WHERE used only for micro-corrections (±7°)
+  - Confirmations only count when WHERE is known (not unknown)
+  - Multi-word tasks require ALL keywords to match
 
 Usage:
     python3 picar_navigator.py
@@ -57,7 +58,7 @@ try:
         VISION_ENABLED        = True
         VISION_INTERVAL       = 3
         VISION_TIMEOUT        = 30
-        TARGET_CONFIRM_NEEDED = 2
+        TARGET_CONFIRM_NEEDED = 3
         APPROACH_STOP_CM      = 30
         SEARCH_FORWARD_STEPS  = 25
         SEARCH_ROTATE_STEPS   = 15
@@ -82,15 +83,15 @@ except ImportError as e:
     VISION_ENABLED        = True
     VISION_INTERVAL       = 3
     VISION_TIMEOUT        = 30
-    TARGET_CONFIRM_NEEDED = 2
+    TARGET_CONFIRM_NEEDED = 3
     APPROACH_STOP_CM      = 30
     SEARCH_FORWARD_STEPS  = 25
     SEARCH_ROTATE_STEPS   = 15
 
-POLL_INTERVAL            = 0.2   # seconds between navigator decisions
-LOCKING_VISION_INTERVAL  = 2.0   # faster queries while stopped for confirmation
-APPROACH_VISION_INTERVAL = 1.5   # faster queries while approaching
-TARGET_LOST_TOLERANCE    = 3     # consecutive NOT FOUND before resetting
+POLL_INTERVAL            = 0.2
+LOCKING_VISION_INTERVAL  = 2.0
+APPROACH_VISION_INTERVAL = 1.5
+TARGET_LOST_TOLERANCE    = 3
 
 # ── Vision state ───────────────────────────────────────────────────────────────
 vision_state = {
@@ -100,7 +101,7 @@ vision_state = {
     "target_where":         "unknown",
     "target_confirm_count": 0,
     "target_lost_count":    0,
-    "lock_heading":         None,   # robot heading when target was confirmed
+    "lock_heading":         None,
     "timestamp":            0,
     "processing":           False,
     "query_count":          0,
@@ -237,17 +238,20 @@ def capture_best_frame(n=3):
 
 # ── Vision — response parser ───────────────────────────────────────────────────
 def parse_vision_response(text, task):
+    """
+    Parse free-form model response using keyword matching.
+    Multi-word tasks require ALL keywords to match — reduces false positives.
+    """
     text_lower = text.lower()
 
     stop_words = {'find', 'the', 'a', 'an', 'some', 'look', 'for',
                   'get', 'locate', 'search', 'seek', 'identify', 'spot'}
     task_words = [w for w in task.lower().split() if w not in stop_words]
 
+    # Multi-word tasks require ALL keywords — prevents Yeti/kettle confusion
     if len(task_words) >= 2:
-        # Require ALL keywords for multi-word tasks
         found = all(word in text_lower for word in task_words)
     else:
-        # Single keyword — any match
         found = any(word in text_lower for word in task_words)
 
     negative = any(phrase in text_lower for phrase in [
@@ -283,8 +287,13 @@ def parse_vision_response(text, task):
 
     return found, where, hint, confidence
 
-# ── Vision — navigation query (no task) ───────────────────────────────────────
-def query_vision_navigation():
+# ── Vision — navigation/search query ──────────────────────────────────────────
+def query_vision_navigation(task: str = ""):
+    """
+    Vision query used during SEARCHING (no confirmed target yet).
+    If a task is set, uses a goal-aware prompt to help steer toward the target.
+    If no task, uses a plain navigation prompt for obstacle avoidance hints.
+    """
     if vision_state["processing"]:
         return
     vision_state["processing"] = True
@@ -296,33 +305,32 @@ def query_vision_navigation():
                 return
 
             image_b64 = base64.b64encode(frame).decode()
-#            prompt = """Look at this camera image and answer briefly:
-#1. What obstacles or objects are ahead?
-#2. Is the path clear to drive forward?
-#3. Which direction (left, right, or forward) is most open?"""
 
-            prompt = f"""You are a small robotic car, with autonomous driving.  You have been given the following task: {task}.
-Look carefully at this image and answer these questions:
+            if task:
+                prompt = f"""You are a small robot car searching for: {task}
+
+Look carefully at this image and answer:
 1. What objects do you see on the floor or in the scene?
 2. Do you see: {task}?
-3. If yes, describe SPECIFICALLY why you are sure it matches the description.
+3. If yes, describe SPECIFICALLY why you are sure it matches.
 4. If yes, is it on the LEFT, CENTER, or RIGHT side of the image?
-5. What direction should a robot move to get closer to it?
+5. What direction should the robot move to find it?
 
 Important: Only say YES if the object EXACTLY matches the description.
-For example:
-A white cooler is NOT a copper tea kettle.
-A paint bucket is NOT a copper tea kettle.
 Be conservative — say NO if you are not certain.
-
 Be specific and concise."""
+            else:
+                prompt = """Look at this camera image and answer briefly:
+1. What obstacles or objects are ahead?
+2. Is the path clear to drive forward?
+3. Which direction (left, right, or forward) is most open?"""
 
             response = requests.post(OLLAMA_URL, json={
                 "model": OLLAMA_MODEL, "prompt": prompt,
                 "images": [image_b64], "stream": False
             }, timeout=VISION_TIMEOUT)
 
-            text = response.json().get('response', '')
+            text       = response.json().get('response', '')
             text_lower = text.lower()
 
             hint = "forward"
@@ -348,6 +356,16 @@ Be specific and concise."""
 
 # ── Vision — goal detection query ─────────────────────────────────────────────
 def query_vision_goal(task: str):
+    """
+    Ask the vision model if the confirmed target is still visible.
+    Used during LOCKING and APPROACHING.
+
+    Key rules:
+    - Confirmations only count when WHERE is known (not 'unknown')
+    - WHERE=unknown means model sees something but can't locate it —
+      unreliable for approach, so we don't count it
+    - Requires TARGET_CONFIRM_NEEDED consecutive WHERE-known detections
+    """
     if vision_state["processing"]:
         return
     vision_state["processing"] = True
@@ -359,12 +377,17 @@ def query_vision_goal(task: str):
                 return
 
             image_b64 = base64.b64encode(frame).decode()
-            prompt = f"""Look carefully at this image and answer these questions:
+            prompt = f"""You are a robot car. You are looking for: {task}
+
+Look carefully at this image and answer these questions:
 1. What objects do you see on the floor or in the scene?
 2. Do you see: {task}?
-3. If yes, is it on the LEFT, CENTER, or RIGHT side of the image?
-4. What direction should a robot move to get closer to it?
+3. If yes, describe SPECIFICALLY why you are sure it matches the description.
+4. If yes, is it on the LEFT, CENTER, or RIGHT side of the image?
+5. What direction should the robot move to get closer to it?
 
+Important: Only say YES if the object EXACTLY matches the description.
+Be conservative — say NO if you are not certain.
 Be specific and concise."""
 
             response = requests.post(OLLAMA_URL, json={
@@ -376,10 +399,18 @@ Be specific and concise."""
             found, where, hint, confidence = parse_vision_response(text, task)
 
             if found and confidence in ("HIGH", "MEDIUM"):
-                vision_state["target_confirm_count"] += 1
-                vision_state["target_lost_count"]     = 0
+                if where != "unknown":
+                    # WHERE is known — count as a solid confirmation
+                    vision_state["target_confirm_count"] += 1
+                    vision_state["target_lost_count"]     = 0
+                    log_suffix = f"WHERE={where} — counting confirmation"
+                else:
+                    # WHERE unknown — found something but can't locate it
+                    # Don't count, don't reset — just wait for better frame
+                    log_suffix = "WHERE=unknown — not counting (position ambiguous)"
             else:
                 vision_state["target_lost_count"] += 1
+                log_suffix = f"lost={vision_state['target_lost_count']}/{TARGET_LOST_TOLERANCE}"
                 if vision_state["target_lost_count"] >= TARGET_LOST_TOLERANCE:
                     if vision_state["target_confirm_count"] > 0:
                         log(f"Target lost after {TARGET_LOST_TOLERANCE} misses — resuming search")
@@ -391,7 +422,7 @@ Be specific and concise."""
             if vision_state["target_confirm_count"] >= TARGET_CONFIRM_NEEDED:
                 if not vision_state["target_seen"]:
                     log(f"🎯 Target confirmed after "
-                        f"{vision_state['target_confirm_count']} detections!")
+                        f"{vision_state['target_confirm_count']} WHERE-known detections!")
                 vision_state["target_seen"] = True
 
             vision_state["description"]  = text[:150].replace('\n', ' ')
@@ -401,10 +432,10 @@ Be specific and concise."""
             vision_state["query_count"] += 1
 
             status = (f"FOUND at {where} (conf={confidence}, "
-                      f"confirms={vision_state['target_confirm_count']}/{TARGET_CONFIRM_NEEDED}, "
-                      f"lost={vision_state['target_lost_count']})"
+                      f"confirms={vision_state['target_confirm_count']}/{TARGET_CONFIRM_NEEDED}) "
+                      f"— {log_suffix}"
                       if found else
-                      f"NOT FOUND (lost={vision_state['target_lost_count']}/{TARGET_LOST_TOLERANCE})")
+                      f"NOT FOUND ({log_suffix})")
             log(f"Vision goal [{vision_state['query_count']}]: {status}")
             post_vision(vision_state["description"], hint)
 
@@ -527,10 +558,7 @@ def decide_search(sensors):
 
 # ── Navigation — locking ───────────────────────────────────────────────────────
 def decide_lock(sensors):
-    """
-    Car stops completely while waiting for vision confirmation.
-    The heading at this moment will be locked for approach.
-    """
+    """Car stops completely while waiting for WHERE-known confirmations."""
     if sensors.get("cliff_detected"): return -SLOW_SPEED, 0, "CLIFF_BACKUP"
     return 0, 0, "LOCKING"
 
@@ -538,16 +566,8 @@ def decide_lock(sensors):
 def decide_approach(sensors):
     """
     Drive toward the target using the LOCKED HEADING from confirmation.
-
-    The locked heading is the direction the car was facing when it
-    confirmed the target. We drive in that direction and use vision
-    WHERE only for tiny micro-corrections (±7°) to keep the target
-    centered. This prevents the car from spinning away from the target
-    due to ambiguous WHERE readings.
-
-    Stop conditions:
-    - Ultrasonic < APPROACH_STOP_CM AND target is centered
-    - Front clearance < 150mm (hard stop — prevents wall crashes)
+    Vision WHERE used only for micro-corrections (±7°).
+    Hard stop at 150mm prevents wall crashes.
     """
     if sensors.get("cliff_detected"): return -SLOW_SPEED, 0, "CLIFF_BACKUP"
 
@@ -558,17 +578,13 @@ def decide_approach(sensors):
     efront = min(front, us_mm) if us_mm > 0 else front
     where  = vision_state.get("target_where", "center")
 
-    # Hard stop — very close to something
     if efront < 150:
         return 0, 0, "GOAL_REACHED"
 
-    # Stop when close enough and target is roughly ahead
     if where in ("center", "unknown") and 0 < us_cm <= APPROACH_STOP_CM:
         return 0, 0, "GOAL_REACHED"
 
-    # Micro-correction only — tiny angle to keep target centered
-    # This is much smaller than search/navigate steering to prevent overshoot
-    MICRO_CORRECTION = int(TURN_ANGLE * 0.2)   # ~7° max
+    MICRO_CORRECTION = int(TURN_ANGLE * 0.2)   # ~7°
 
     if   where == "left":  angle = -MICRO_CORRECTION
     elif where == "right": angle =  MICRO_CORRECTION
@@ -590,7 +606,6 @@ def update_position(speed, angle, dt):
     robot_y = max(1, min(GRID_SIZE-2, robot_y - int(dist_mm * math.cos(rad) / GRID_RES)))
 
 def reset_vision():
-    """Reset all vision state for a fresh search."""
     vision_state["target_seen"]          = False
     vision_state["target_confirm_count"] = 0
     vision_state["target_lost_count"]    = 0
@@ -609,7 +624,7 @@ def main():
     log(f"Vision:   {'ENABLED' if VISION_ENABLED else 'DISABLED'} "
         f"search={VISION_INTERVAL}s lock={LOCKING_VISION_INTERVAL}s "
         f"approach={APPROACH_VISION_INTERVAL}s timeout={VISION_TIMEOUT}s")
-    log(f"Confirm:  {TARGET_CONFIRM_NEEDED} detections needed, "
+    log(f"Confirm:  {TARGET_CONFIRM_NEEDED} WHERE-known detections needed, "
         f"lost_tolerance={TARGET_LOST_TOLERANCE}")
     log(f"Approach: stop at {APPROACH_STOP_CM}cm, hard stop at 15cm")
     log(f"Steering: micro-correction only during approach (±{int(TURN_ANGLE*0.2)}°)")
@@ -673,15 +688,20 @@ def main():
             seen     = vision_state["target_seen"]
 
             if seen:
-                interval = APPROACH_VISION_INTERVAL   # 1.5s — fastest
+                interval = APPROACH_VISION_INTERVAL
             elif confirms > 0:
-                interval = LOCKING_VISION_INTERVAL    # 2.0s — fast
+                interval = LOCKING_VISION_INTERVAL
             else:
-                interval = VISION_INTERVAL            # 3.0s — normal
+                interval = VISION_INTERVAL
 
             if VISION_ENABLED and (now - last_vision_time >= interval):
                 if task:
-                    query_vision_goal(task)
+                    if seen or confirms > 0:
+                        # Target detected or being confirmed — use goal query
+                        query_vision_goal(task)
+                    else:
+                        # Still searching — use navigation query with task context
+                        query_vision_navigation(task)
                 else:
                     query_vision_navigation()
                 last_vision_time = now
@@ -691,7 +711,6 @@ def main():
                 speed, angle, decision = decide_navigate(sensors)
 
             elif vision_state["target_seen"]:
-                # Lock heading on first entry to APPROACHING
                 if vision_state["lock_heading"] is None:
                     vision_state["lock_heading"] = robot_angle
                     log(f"Approach heading locked at {robot_angle:.0f}°")
@@ -721,6 +740,7 @@ def main():
 
             if decision != last_decision:
                 lidar = sensors.get('lidar', {})
+                hdg   = vision_state['lock_heading']
                 log(f"Decision: {last_decision} → {decision} "
                     f"(F:{lidar.get('front',0):.0f} "
                     f"L:{lidar.get('left',0):.0f} "
@@ -730,9 +750,8 @@ def main():
                     f"seen={vision_state['target_seen']} "
                     f"confirms={vision_state['target_confirm_count']} "
                     f"lost={vision_state['target_lost_count']} "
-                    f"lock_hdg={vision_state['lock_heading']:.0f}°"
-                    if vision_state['lock_heading'] is not None
-                    else f"Decision: {last_decision} → {decision} "
+                    f"lock_hdg={hdg:.0f}° " if hdg is not None else
+                    f"Decision: {last_decision} → {decision} "
                     f"(F:{lidar.get('front',0):.0f} "
                     f"L:{lidar.get('left',0):.0f} "
                     f"R:{lidar.get('right',0):.0f} "
