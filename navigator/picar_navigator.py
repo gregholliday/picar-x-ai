@@ -8,11 +8,11 @@ autonomous driving decisions. Supports task-based navigation:
   etc.
 
 State machine:
-  IDLE        → no task set, standard obstacle avoidance
-  SEARCHING   → task set, target not seen, drive+rotate pattern
-  LOCKING     → first detection received, car stops, waits for confirmation
-  APPROACHING → target confirmed, drive toward it
-  GOAL_REACHED→ close enough, stop and honk
+  IDLE         → no task, standard obstacle avoidance
+  SEARCHING    → task set, target not seen, drive+rotate pattern
+  LOCKING      → first detection, car stops, waits for confirmation
+  APPROACHING  → target confirmed, drive toward it with scaled steering
+  GOAL_REACHED → close enough, stop and honk
 
 Usage:
     python3 picar_navigator.py
@@ -80,8 +80,10 @@ except ImportError as e:
     SEARCH_FORWARD_STEPS  = 25
     SEARCH_ROTATE_STEPS   = 15
 
-POLL_INTERVAL        = 0.2   # seconds between navigator decisions
-LOCKING_VISION_INTERVAL = 2  # faster vision queries while locking
+POLL_INTERVAL            = 0.2   # seconds between navigator decisions
+LOCKING_VISION_INTERVAL  = 2.0   # faster queries while stopped for confirmation
+APPROACH_VISION_INTERVAL = 1.5   # faster queries while approaching target
+TARGET_LOST_TOLERANCE    = 3     # consecutive NOT FOUND before resetting during approach
 
 # ── Vision state ───────────────────────────────────────────────────────────────
 vision_state = {
@@ -90,6 +92,7 @@ vision_state = {
     "target_seen":          False,
     "target_where":         "unknown",
     "target_confirm_count": 0,
+    "target_lost_count":    0,
     "timestamp":            0,
     "processing":           False,
     "query_count":          0,
@@ -199,7 +202,6 @@ def post_task_found():
 
 # ── Vision — capture frames ────────────────────────────────────────────────────
 def capture_frame():
-    """Capture a single JPEG frame from the Pi camera stream."""
     try:
         req  = urllib.request.urlopen(CAMERA_URL, timeout=5)
         data = b''
@@ -216,7 +218,6 @@ def capture_frame():
         return None
 
 def capture_best_frame(n=3):
-    """Capture N frames and return the largest (most detail)."""
     frames = []
     for i in range(n):
         frame = capture_frame()
@@ -228,7 +229,6 @@ def capture_best_frame(n=3):
 
 # ── Vision — response parser ───────────────────────────────────────────────────
 def parse_vision_response(text, task):
-    """Parse free-form model response using keyword matching."""
     text_lower = text.lower()
 
     stop_words = {'find', 'the', 'a', 'an', 'some', 'look', 'for',
@@ -272,7 +272,6 @@ def parse_vision_response(text, task):
 
 # ── Vision — navigation query (no task) ───────────────────────────────────────
 def query_vision_navigation():
-    """Standard scene description for navigation hints when no task is set."""
     if vision_state["processing"]:
         return
     vision_state["processing"] = True
@@ -320,11 +319,6 @@ def query_vision_navigation():
 
 # ── Vision — goal detection query ─────────────────────────────────────────────
 def query_vision_goal(task: str):
-    """
-    Ask the vision model if the target is visible.
-    Natural language prompt + keyword parsing.
-    Runs in background thread — never blocks navigation.
-    """
     if vision_state["processing"]:
         return
     vision_state["processing"] = True
@@ -354,11 +348,16 @@ Be specific and concise."""
 
             if found and confidence in ("HIGH", "MEDIUM"):
                 vision_state["target_confirm_count"] += 1
+                vision_state["target_lost_count"]     = 0
             else:
-                if vision_state["target_confirm_count"] > 0:
-                    log(f"Confirmation reset (was {vision_state['target_confirm_count']})")
-                vision_state["target_confirm_count"] = 0
-                vision_state["target_seen"]          = False
+                vision_state["target_lost_count"] += 1
+                # Only reset if lost multiple times in a row
+                if vision_state["target_lost_count"] >= TARGET_LOST_TOLERANCE:
+                    if vision_state["target_confirm_count"] > 0:
+                        log(f"Target lost after {TARGET_LOST_TOLERANCE} misses — resuming search")
+                    vision_state["target_confirm_count"] = 0
+                    vision_state["target_seen"]          = False
+                    vision_state["target_lost_count"]    = 0
 
             if vision_state["target_confirm_count"] >= TARGET_CONFIRM_NEEDED:
                 if not vision_state["target_seen"]:
@@ -373,8 +372,10 @@ Be specific and concise."""
             vision_state["query_count"] += 1
 
             status = (f"FOUND at {where} (conf={confidence}, "
-                      f"confirms={vision_state['target_confirm_count']}/{TARGET_CONFIRM_NEEDED})"
-                      if found else "NOT FOUND")
+                      f"confirms={vision_state['target_confirm_count']}/{TARGET_CONFIRM_NEEDED}, "
+                      f"lost={vision_state['target_lost_count']})"
+                      if found else
+                      f"NOT FOUND (lost={vision_state['target_lost_count']}/{TARGET_LOST_TOLERANCE})")
             log(f"Vision goal [{vision_state['query_count']}]: {status}")
             post_vision(vision_state["description"], hint)
 
@@ -410,7 +411,6 @@ def save_map():
 
 # ── Navigation — standard obstacle avoidance ───────────────────────────────────
 def decide_navigate(sensors):
-    """Standard obstacle avoidance with vision hint as tiebreaker."""
     global robot_angle
 
     if sensors.get("reflex_active"):  return 0, 0, "REFLEX_OVERRIDE"
@@ -454,7 +454,6 @@ def decide_navigate(sensors):
 
 # ── Navigation — search pattern ────────────────────────────────────────────────
 def decide_search(sensors):
-    """Drive forward avoiding obstacles, then rotate to scan."""
     global search_phase, search_step_counter, robot_angle
 
     if sensors.get("reflex_active"):  return 0, 0, "REFLEX_OVERRIDE"
@@ -488,7 +487,7 @@ def decide_search(sensors):
 
         return SLOW_SPEED, 0, "SEARCHING_FORWARD"
 
-    else:  # rotate
+    else:
         if search_step_counter >= SEARCH_ROTATE_STEPS:
             search_phase        = "forward"
             search_step_counter = 0
@@ -497,22 +496,24 @@ def decide_search(sensors):
         robot_angle = (robot_angle + 35) % 360
         return 0, TURN_ANGLE, "SEARCHING_ROTATE"
 
-# ── Navigation — locking (first detection, car stopped) ───────────────────────
+# ── Navigation — locking ───────────────────────────────────────────────────────
 def decide_lock(sensors):
-    """
-    Car stops completely and waits for vision confirmation.
-    First detection received — hold position until TARGET_CONFIRM_NEEDED met.
-    """
+    """Car stopped, waiting for second vision confirmation."""
     if sensors.get("cliff_detected"): return -SLOW_SPEED, 0, "CLIFF_BACKUP"
-    # Stay stopped — let the vision thread confirm
     return 0, 0, "LOCKING"
 
 # ── Navigation — approach target ───────────────────────────────────────────────
 def decide_approach(sensors):
     """
-    Move toward the confirmed target.
-    Steers gently based on WHERE target was last seen.
-    Stops when ultrasonic reads close enough.
+    Move toward confirmed target with distance-scaled steering.
+
+    Steering is scaled by distance to prevent overshooting:
+      Far  (>150cm): 50% of TURN_ANGLE — moderate correction
+      Mid  (>80cm):  30% of TURN_ANGLE — gentle correction
+      Near (<80cm):  no steering       — drive straight to target
+
+    Only stops when target is centered AND within APPROACH_STOP_CM.
+    Hard stops at 150mm front clearance to prevent wall crashes.
     """
     if sensors.get("cliff_detected"): return -SLOW_SPEED, 0, "CLIFF_BACKUP"
 
@@ -521,19 +522,24 @@ def decide_approach(sensors):
     front  = lidar.get("front", 9999)
     us_mm  = us_cm * 10
     efront = min(front, us_mm) if us_mm > 0 else front
+    where  = vision_state.get("target_where", "center")
 
-    where = vision_state.get("target_where", "center")
-
-    # Only stop if target is roughly centered AND we're close
-    # If target is left/right, keep steering — don't stop for side obstacles
-    target_centered = where in ("center", "unknown")
-
-    if target_centered and 0 < us_cm <= APPROACH_STOP_CM:
+    # Hard stop — very close to something, declare success
+    if efront < 150:
         return 0, 0, "GOAL_REACHED"
 
-    # Steer toward target
-    if   where == "left":  angle = -TURN_ANGLE   # stronger left turn
-    elif where == "right": angle =  TURN_ANGLE   # stronger right turn
+    # Stop when close enough and target is roughly ahead
+    if where in ("center", "unknown") and 0 < us_cm <= APPROACH_STOP_CM:
+        return 0, 0, "GOAL_REACHED"
+
+    # Scale steering by distance — gentler when closer
+    # This prevents the car from overshooting and losing the target
+    if   us_cm > 150: steer_factor = 0.5   # far    — moderate steering (17°)
+    elif us_cm > 80:  steer_factor = 0.3   # medium — gentle steering (10°)
+    else:             steer_factor = 0.0   # close  — drive straight, no steering
+
+    if   where == "left":  angle = -int(TURN_ANGLE * steer_factor)
+    elif where == "right": angle =  int(TURN_ANGLE * steer_factor)
     else:                  angle = 0
 
     if efront < FRONT_CAUTION:
@@ -561,10 +567,11 @@ def main():
     log(f"Ollama:   {OLLAMA_URL}")
     log(f"Model:    {OLLAMA_MODEL}")
     log(f"Vision:   {'ENABLED' if VISION_ENABLED else 'DISABLED'} "
-        f"every {VISION_INTERVAL}s, timeout={VISION_TIMEOUT}s")
-    log(f"Confirm:  {TARGET_CONFIRM_NEEDED} consecutive detections needed")
-    log(f"Approach: stop at {APPROACH_STOP_CM}cm")
-    log(f"Speed:    base={BASE_SPEED}, slow={SLOW_SPEED}")
+        f"search={VISION_INTERVAL}s lock={LOCKING_VISION_INTERVAL}s "
+        f"approach={APPROACH_VISION_INTERVAL}s timeout={VISION_TIMEOUT}s")
+    log(f"Confirm:  {TARGET_CONFIRM_NEEDED} detections, lost_tolerance={TARGET_LOST_TOLERANCE}")
+    log(f"Approach: stop at {APPROACH_STOP_CM}cm, hard stop at 15cm")
+    log(f"Speed:    base={BASE_SPEED}, slow={SLOW_SPEED}, turn={TURN_ANGLE}°")
     log("Waiting for AUTONOMOUS mode...")
 
     map_save_counter = 0
@@ -590,6 +597,7 @@ def main():
                     search_step_counter = 0
                     vision_state["target_seen"]          = False
                     vision_state["target_confirm_count"] = 0
+                    vision_state["target_lost_count"]    = 0
                 time.sleep(0.5)
                 continue
 
@@ -597,15 +605,14 @@ def main():
             task        = task_data.get("task", "")   if task_data else ""
             task_status = task_data.get("status", "") if task_data else ""
 
-            # Reset on task clear
             if not task and goal_reached:
                 goal_reached = False
                 vision_state["target_seen"]          = False
                 vision_state["target_confirm_count"] = 0
+                vision_state["target_lost_count"]    = 0
                 search_phase        = "forward"
                 search_step_counter = 0
 
-            # Hold after goal reached
             if goal_reached or task_status == "GOAL_REACHED":
                 if last_decision != "GOAL_REACHED":
                     log("Task complete — waiting for new task.")
@@ -622,13 +629,17 @@ def main():
             if scan:
                 update_map(scan, robot_x, robot_y, robot_angle)
 
-            # ── Vision queries ─────────────────────────────────────────────────
-            now = time.time()
+            # ── Vision query interval based on current state ───────────────────
+            now      = time.time()
             confirms = vision_state["target_confirm_count"]
+            seen     = vision_state["target_seen"]
 
-            # Use faster interval when locking (car stopped, need quick confirmation)
-            interval = LOCKING_VISION_INTERVAL if (0 < confirms < TARGET_CONFIRM_NEEDED) \
-                       else VISION_INTERVAL
+            if seen:
+                interval = APPROACH_VISION_INTERVAL   # 1.5s — fastest during approach
+            elif confirms > 0:
+                interval = LOCKING_VISION_INTERVAL    # 2.0s — fast during locking
+            else:
+                interval = VISION_INTERVAL            # 3.0s — normal during search
 
             if VISION_ENABLED and (now - last_vision_time >= interval):
                 if task:
@@ -639,11 +650,9 @@ def main():
 
             # ── State machine ──────────────────────────────────────────────────
             if not task:
-                # No task — standard obstacle avoidance
                 speed, angle, decision = decide_navigate(sensors)
 
             elif vision_state["target_seen"]:
-                # Fully confirmed — approach
                 speed, angle, decision = decide_approach(sensors)
                 post_task_status("APPROACHING")
 
@@ -660,16 +669,13 @@ def main():
                     threading.Thread(target=celebrate, daemon=True).start()
 
             elif vision_state["target_confirm_count"] > 0:
-                # First detection received — STOP and wait for confirmation
                 speed, angle, decision = decide_lock(sensors)
                 post_task_status("LOCKING")
 
             else:
-                # No detection yet — keep searching
                 speed, angle, decision = decide_search(sensors)
                 post_task_status("SEARCHING")
 
-            # Log and post decision changes
             if decision != last_decision:
                 lidar = sensors.get('lidar', {})
                 log(f"Decision: {last_decision} → {decision} "
@@ -677,9 +683,10 @@ def main():
                     f"L:{lidar.get('left',0):.0f} "
                     f"R:{lidar.get('right',0):.0f} "
                     f"US:{sensors.get('ultrasonic_cm',0):.1f}cm "
-                    f"vision={vision_state['hint']} "
+                    f"where={vision_state['target_where']} "
                     f"seen={vision_state['target_seen']} "
-                    f"confirms={vision_state['target_confirm_count']})")
+                    f"confirms={vision_state['target_confirm_count']} "
+                    f"lost={vision_state['target_lost_count']})")
                 last_decision = decision
                 post_decision(decision)
 
