@@ -243,7 +243,12 @@ def parse_vision_response(text, task):
                   'get', 'locate', 'search', 'seek', 'identify', 'spot'}
     task_words = [w for w in task.lower().split() if w not in stop_words]
 
-    found = any(word in text_lower for word in task_words)
+    if len(task_words) >= 2:
+        # Require ALL keywords for multi-word tasks
+        found = all(word in text_lower for word in task_words)
+    else:
+        # Single keyword — any match
+        found = any(word in text_lower for word in task_words)
 
     negative = any(phrase in text_lower for phrase in [
         'no ', 'not ', "don't", "doesn't", "can't", 'cannot',
@@ -291,10 +296,21 @@ def query_vision_navigation():
                 return
 
             image_b64 = base64.b64encode(frame).decode()
-            prompt = """Look at this camera image and answer briefly:
-1. What obstacles or objects are ahead?
-2. Is the path clear to drive forward?
-3. Which direction (left, right, or forward) is most open?"""
+            prompt = f"""You are a small robotic car, with autonomous driving.  You have been given the following task: {task}.
+Look carefully at this image and answer these questions:
+1. What objects do you see on the floor or in the scene?
+2. Do you see: {task}?
+3. If yes, describe SPECIFICALLY why you are sure it matches the description.
+4. If yes, is it on the LEFT, CENTER, or RIGHT side of the image?
+5. What direction should a robot move to get closer to it?
+
+Important: Only say YES if the object EXACTLY matches the description.
+For example:
+A white cooler is NOT a copper tea kettle.
+A paint bucket is NOT a copper tea kettle.
+Be conservative — say NO if you are not certain.
+
+Be specific and concise."""
 
             response = requests.post(OLLAMA_URL, json={
                 "model": OLLAMA_MODEL, "prompt": prompt,
