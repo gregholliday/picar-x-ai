@@ -51,7 +51,7 @@ try:
         VISION_INTERVAL       = 3
         VISION_TIMEOUT        = 30
         TARGET_CONFIRM_NEEDED = 2
-        APPROACH_STOP_CM      = 30
+        APPROACH_STOP_CM      = 40
         SEARCH_FORWARD_STEPS  = 25
         SEARCH_ROTATE_STEPS   = 15
 
@@ -529,7 +529,10 @@ def decide_approach(sensors):
         return 0, 0, "GOAL_REACHED"
 
     # Stop when close enough and target is roughly ahead
-    if where in ("center", "unknown") and 0 < us_cm <= APPROACH_STOP_CM:
+    lidar_close = front < 400   # LiDAR front under 400mm
+    us_close    = 0 < us_cm <= APPROACH_STOP_CM
+
+    if (us_close or lidar_close) and where in ("center", "unknown"):
         return 0, 0, "GOAL_REACHED"
 
     # Scale steering by distance — gentler when closer
