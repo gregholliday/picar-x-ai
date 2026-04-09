@@ -296,6 +296,11 @@ def query_vision_navigation():
                 return
 
             image_b64 = base64.b64encode(frame).decode()
+#            prompt = """Look at this camera image and answer briefly:
+#1. What obstacles or objects are ahead?
+#2. Is the path clear to drive forward?
+#3. Which direction (left, right, or forward) is most open?"""
+
             prompt = f"""You are a small robotic car, with autonomous driving.  You have been given the following task: {task}.
 Look carefully at this image and answer these questions:
 1. What objects do you see on the floor or in the scene?
