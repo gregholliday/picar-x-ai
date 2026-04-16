@@ -332,6 +332,31 @@ def safe_drive(speed: int, angle: int):
     else:
         px.stop()
 
+# ── Motor helpers (corrected for Motor 2 inverted wiring) ────────────────────
+def left_motor(speed: int):
+    """Left motor: positive=forward, negative=backward."""
+    px.set_motor_speed(1, speed)
+
+def right_motor(speed: int):
+    """Right motor: inverted wiring — negate speed for correct direction."""
+    px.set_motor_speed(2, -speed)
+
+def option_a_turn(direction: str, speed: int, angle: int):
+    """
+    Option A turn: front wheels steer + outside wheel drives + inside wheel stops.
+    direction: 'left' or 'right'
+    speed: outside wheel speed
+    angle: front wheel steering angle (positive value, sign applied internally)
+    """
+    if direction == "right":
+        px.set_dir_servo_angle(abs(angle))
+        left_motor(speed)    # outside wheel drives
+        right_motor(0)       # inside wheel stops
+    elif direction == "left":
+        px.set_dir_servo_angle(-abs(angle))
+        left_motor(0)        # inside wheel stops
+        right_motor(speed)   # outside wheel drives
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
 @app.get("/api/status")
 def get_status():
@@ -345,15 +370,15 @@ def get_status():
         "cliff_detected": state["cliff_detected"],
         "obstacle_close": state["obstacle_close"],
         "reflex_active":  state["reflex_active"],
-        "battery_v":      state["battery_v"],
-        "battery_pct":    state["battery_pct"],  
-        "task":               "",
-        "task_status":        "IDLE",
-        "task_found":         False,
-        "vision_description": "",
-        "vision_hint":        "none",       
-        "navigator_decision": "IDLE",
-        "navigator_log":      []               
+        "battery_v":          state["battery_v"],
+        "battery_pct":        state["battery_pct"],
+        "task":               state["task"],
+        "task_status":        state["task_status"],
+        "task_found":         state["task_found"],
+        "vision_description": state["vision_description"],
+        "vision_hint":        state["vision_hint"],
+        "navigator_decision": state["navigator_decision"],
+        "navigator_log":      state["navigator_log"],
     }
 
 @app.get("/api/sensors")
@@ -463,6 +488,21 @@ def drive(speed: int = 0, angle: int = 0):
     elif state["mode"] == "autonomous":
         safe_drive(speed, angle)
     return {"speed": state["speed"], "angle": state["angle"]}
+
+@app.post("/api/turn")
+def turn(direction: str = "right", speed: int = 20, angle: int = 35):
+    """
+    Option A turn: front wheels steer + outside wheel drives + inside wheel stops.
+    direction: 'left' or 'right'
+    speed: outside wheel speed (default 20)
+    angle: front wheel steering angle (default 35)
+    Only works in autonomous mode.
+    """
+    if state["mode"] == "autonomous" and not state["reflex_active"]:
+        option_a_turn(direction, speed, angle)
+        state["speed"] = speed
+        state["angle"] = angle if direction == "right" else -angle
+    return {"direction": direction, "speed": speed, "angle": angle}
 
 @app.post("/api/stop")
 def stop():

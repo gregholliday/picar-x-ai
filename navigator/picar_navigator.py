@@ -92,6 +92,7 @@ POLL_INTERVAL            = 0.2
 LOCKING_VISION_INTERVAL  = 2.0
 APPROACH_VISION_INTERVAL = 1.5
 TARGET_LOST_TOLERANCE    = 3
+OPTION_A_TURN_SPEED      = 20   # outside wheel speed for Option A turns
 
 # ── Vision state ───────────────────────────────────────────────────────────────
 vision_state = {
@@ -174,6 +175,20 @@ def send_stop():
         requests.post(f"{AGENT_URL}/api/stop", timeout=0.5)
     except Exception as e:
         log(f"Stop command failed: {e}")
+
+def send_turn(direction: str, speed: int = 20, angle: int = 35):
+    """
+    Option A turn via agent /api/turn endpoint.
+    direction: 'left' or 'right'
+    Front wheels steer + outside wheel drives + inside wheel stops.
+    """
+    try:
+        requests.post(f"{AGENT_URL}/api/turn",
+                      params={"direction": direction,
+                              "speed":     speed,
+                              "angle":     angle}, timeout=0.5)
+    except Exception as e:
+        log(f"Turn command failed: {e}")
 
 def send_buzzer(sound: str = "horn"):
     try:
@@ -555,7 +570,6 @@ def decide_search(sensors):
 
         robot_angle = (robot_angle + 35) % 360
         return 0, TURN_ANGLE, "SEARCHING_ROTATE"
-
 # ── Navigation — locking ───────────────────────────────────────────────────────
 def decide_lock(sensors):
     """Car stops completely while waiting for WHERE-known confirmations."""
@@ -628,7 +642,7 @@ def main():
         f"lost_tolerance={TARGET_LOST_TOLERANCE}")
     log(f"Approach: stop at {APPROACH_STOP_CM}cm, hard stop at 15cm")
     log(f"Steering: micro-correction only during approach (±{int(TURN_ANGLE*0.2)}°)")
-    log(f"Speed:    base={BASE_SPEED}, slow={SLOW_SPEED}, turn={TURN_ANGLE}°")
+    log(f"Speed:    base={BASE_SPEED}, slow={SLOW_SPEED}, turn={TURN_ANGLE}°, option_a={OPTION_A_TURN_SPEED}")
     log("Waiting for AUTONOMOUS mode...")
 
     map_save_counter = 0
@@ -765,7 +779,13 @@ def main():
                 post_decision(decision)
 
             if not goal_reached:
-                send_drive(speed, angle)
+                # Use Option A turns for search rotate/turn decisions
+                if decision in ("SEARCHING_ROTATE", "SEARCH_TURN_RIGHT"):
+                    send_turn("right", OPTION_A_TURN_SPEED, TURN_ANGLE)
+                elif decision in ("SEARCH_TURN_LEFT",):
+                    send_turn("left", OPTION_A_TURN_SPEED, TURN_ANGLE)
+                else:
+                    send_drive(speed, angle)
 
             update_position(speed, angle, POLL_INTERVAL)
 
