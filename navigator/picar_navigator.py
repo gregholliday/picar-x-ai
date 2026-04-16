@@ -58,7 +58,7 @@ try:
         VISION_ENABLED        = True
         VISION_INTERVAL       = 3
         VISION_TIMEOUT        = 30
-        TARGET_CONFIRM_NEEDED = 3
+        TARGET_CONFIRM_NEEDED = 2
         APPROACH_STOP_CM      = 30
         SEARCH_FORWARD_STEPS  = 25
         SEARCH_ROTATE_STEPS   = 15
@@ -91,8 +91,13 @@ except ImportError as e:
 POLL_INTERVAL            = 0.2
 LOCKING_VISION_INTERVAL  = 2.0
 APPROACH_VISION_INTERVAL = 1.5
-TARGET_LOST_TOLERANCE    = 3
 OPTION_A_TURN_SPEED      = 20   # outside wheel speed for Option A turns
+
+# Lost tolerance — how many consecutive NOT FOUND before giving up
+# Split by state: be patient when locked/approaching, fast when searching
+TARGET_LOST_TOLERANCE          = 2   # searching  — give up fast, wrong object
+TARGET_LOST_TOLERANCE_LOCKING  = 4   # locking    — be patient, car is stopped
+TARGET_LOST_TOLERANCE_APPROACH = 5   # approaching — object may briefly leave frame
 
 # ── Vision state ───────────────────────────────────────────────────────────────
 vision_state = {
@@ -425,10 +430,19 @@ Be specific and concise."""
                     log_suffix = "WHERE=unknown — not counting (position ambiguous)"
             else:
                 vision_state["target_lost_count"] += 1
-                log_suffix = f"lost={vision_state['target_lost_count']}/{TARGET_LOST_TOLERANCE}"
-                if vision_state["target_lost_count"] >= TARGET_LOST_TOLERANCE:
+
+                # Pick tolerance based on current state
+                if vision_state["target_seen"]:
+                    lost_tolerance = TARGET_LOST_TOLERANCE_APPROACH
+                elif vision_state["target_confirm_count"] > 0:
+                    lost_tolerance = TARGET_LOST_TOLERANCE_LOCKING
+                else:
+                    lost_tolerance = TARGET_LOST_TOLERANCE
+
+                log_suffix = f"lost={vision_state['target_lost_count']}/{lost_tolerance}"
+                if vision_state["target_lost_count"] >= lost_tolerance:
                     if vision_state["target_confirm_count"] > 0:
-                        log(f"Target lost after {TARGET_LOST_TOLERANCE} misses — resuming search")
+                        log(f"Target lost after {lost_tolerance} misses — resuming search")
                     vision_state["target_confirm_count"] = 0
                     vision_state["target_seen"]          = False
                     vision_state["target_lost_count"]    = 0
@@ -639,7 +653,9 @@ def main():
         f"search={VISION_INTERVAL}s lock={LOCKING_VISION_INTERVAL}s "
         f"approach={APPROACH_VISION_INTERVAL}s timeout={VISION_TIMEOUT}s")
     log(f"Confirm:  {TARGET_CONFIRM_NEEDED} WHERE-known detections needed, "
-        f"lost_tolerance={TARGET_LOST_TOLERANCE}")
+        f"lost=search:{TARGET_LOST_TOLERANCE}/"
+        f"lock:{TARGET_LOST_TOLERANCE_LOCKING}/"
+        f"approach:{TARGET_LOST_TOLERANCE_APPROACH}")
     log(f"Approach: stop at {APPROACH_STOP_CM}cm, hard stop at 15cm")
     log(f"Steering: micro-correction only during approach (±{int(TURN_ANGLE*0.2)}°)")
     log(f"Speed:    base={BASE_SPEED}, slow={SLOW_SPEED}, turn={TURN_ANGLE}°, option_a={OPTION_A_TURN_SPEED}")
