@@ -612,7 +612,7 @@ def decide_approach(sensors):
     if where in ("center", "unknown") and 0 < us_cm <= APPROACH_STOP_CM:
         return 0, 0, "GOAL_REACHED"
 
-    MICRO_CORRECTION = int(TURN_ANGLE * 0.2)   # ~7°
+    MICRO_CORRECTION = int(TURN_ANGLE * 0.4)   # ~14° - was 0.2 - 7
 
     if   where == "left":  angle = -MICRO_CORRECTION
     elif where == "right": angle =  MICRO_CORRECTION
