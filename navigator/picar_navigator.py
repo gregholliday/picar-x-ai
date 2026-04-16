@@ -726,12 +726,8 @@ def main():
 
             if VISION_ENABLED and (now - last_vision_time >= interval):
                 if task:
-                    if seen or confirms > 0:
-                        # Target detected or being confirmed — use goal query
-                        query_vision_goal(task)
-                    else:
-                        # Still searching — use navigation query with task context
-                        query_vision_navigation(task)
+                    # Target detected or being confirmed — use goal query
+                    query_vision_goal(task)
                 else:
                     query_vision_navigation()
                 last_vision_time = now
