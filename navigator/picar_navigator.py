@@ -111,6 +111,8 @@ vision_state = {
     "timestamp":            0,
     "processing":           False,
     "query_count":          0,
+    "target_center_count":  0,
+    "last_where":          "unknown",
 }
 
 # ── Room map ───────────────────────────────────────────────────────────────────
@@ -419,17 +421,18 @@ Be specific and concise."""
             found, where, hint, confidence = parse_vision_response(text, task)
 
             if found and confidence in ("HIGH", "MEDIUM"):
-                if where != "unknown":
-                    # WHERE is known — count as a solid confirmation
-                    vision_state["target_confirm_count"] += 1
-                    vision_state["target_lost_count"]     = 0
-                    log_suffix = f"WHERE={where} — counting confirmation"
+                vision_state["target_confirm_count"] += 1
+                vision_state["target_lost_count"]     = 0
+
+                if where == "center":
+                    vision_state["target_center_count"] += 1
                 else:
-                    # WHERE unknown — found something but can't locate it
-                    # Don't count, don't reset — just wait for better frame
-                    log_suffix = "WHERE=unknown — not counting (position ambiguous)"
+                    vision_state["target_center_count"] = 0
+
+                log_suffix = f"WHERE={where} — confirms={vision_state['target_confirm_count']} center={vision_state['target_center_count']}"
             else:
                 vision_state["target_lost_count"] += 1
+                vision_state["target_center_count"] = 0
 
                 # Pick tolerance based on current state
                 if vision_state["target_seen"]:
@@ -586,41 +589,61 @@ def decide_search(sensors):
         return 0, TURN_ANGLE, "SEARCHING_ROTATE"
 # ── Navigation — locking ───────────────────────────────────────────────────────
 def decide_lock(sensors):
-    """Car stops completely while waiting for WHERE-known confirmations."""
-    if sensors.get("cliff_detected"): return -SLOW_SPEED, 0, "CLIFF_BACKUP"
-    return 0, 0, "LOCKING"
+    if sensors.get("cliff_detected"):
+        return -SLOW_SPEED, 0, "CLIFF_BACKUP"
+
+    where = vision_state.get("target_where", "unknown")
+
+    ALIGN_ANGLE = int(TURN_ANGLE * 0.5)  # ~17°
+
+    if where == "left":
+        return 0, -ALIGN_ANGLE, "LOCKING_ALIGN_LEFT"
+    elif where == "right":
+        return 0, ALIGN_ANGLE, "LOCKING_ALIGN_RIGHT"
+    else:
+        return 0, 0, "LOCKING_CENTERED"
 
 # ── Navigation — approach target ───────────────────────────────────────────────
 def decide_approach(sensors):
-    """
-    Drive toward the target using the LOCKED HEADING from confirmation.
-    Vision WHERE used only for micro-corrections (±7°).
-    Hard stop at 150mm prevents wall crashes.
-    """
-    if sensors.get("cliff_detected"): return -SLOW_SPEED, 0, "CLIFF_BACKUP"
+    if sensors.get("cliff_detected"):
+        return -SLOW_SPEED, 0, "CLIFF_BACKUP"
+
+    now = time.time()
+    vision_age = now - vision_state.get("timestamp", 0)
+
+    # 🚫 DO NOT MOVE if vision is stale or processing
+    if vision_state["processing"] or vision_age > 1.0:
+        return 0, 0, "APPROACH_WAIT_VISION"
 
     us_cm  = sensors.get("ultrasonic_cm", 999)
     lidar  = sensors.get("lidar", {})
     front  = lidar.get("front", 9999)
     us_mm  = us_cm * 10
     efront = min(front, us_mm) if us_mm > 0 else front
-    where  = vision_state.get("target_where", "center")
 
+    where = vision_state.get("target_where", "center")
+
+    # 🛑 STOP CONDITIONS
     if efront < 150:
         return 0, 0, "GOAL_REACHED"
 
-    if where in ("center", "unknown") and 0 < us_cm <= APPROACH_STOP_CM:
+    if where == "center" and 0 < us_cm <= APPROACH_STOP_CM:
         return 0, 0, "GOAL_REACHED"
 
-    MICRO_CORRECTION = int(TURN_ANGLE * 0.4)   # ~14° - was 0.2 - 7
+    # 🎯 ALIGN FIRST, THEN MOVE
+    ALIGN_ANGLE = int(TURN_ANGLE * 0.5)
 
-    if   where == "left":  angle = -MICRO_CORRECTION
-    elif where == "right": angle =  MICRO_CORRECTION
-    else:                  angle = 0
+    if where == "left":
+        return 0, -ALIGN_ANGLE, "APPROACH_ALIGN_LEFT"
 
+    elif where == "right":
+        return 0, ALIGN_ANGLE, "APPROACH_ALIGN_RIGHT"
+
+    # 🚗 ONLY MOVE FORWARD WHEN CENTERED
     if efront < FRONT_CAUTION:
-        return SLOW_SPEED, angle, "APPROACHING_SLOW"
-    return BASE_SPEED, angle, "APPROACHING"
+        return SLOW_SPEED, 0, "APPROACH_FORWARD_SLOW"
+
+    return SLOW_SPEED, 0, "APPROACH_FORWARD"
 
 # ── Update robot position estimate ─────────────────────────────────────────────
 def update_position(speed, angle, dt):
@@ -639,6 +662,7 @@ def reset_vision():
     vision_state["target_lost_count"]    = 0
     vision_state["lock_heading"]         = None
     vision_state["target_where"]         = "unknown"
+    vision_state["target_center_count"] = 0
 
 # ── Main loop ──────────────────────────────────────────────────────────────────
 def main():
@@ -736,7 +760,10 @@ def main():
             if not task:
                 speed, angle, decision = decide_navigate(sensors)
 
-            elif vision_state["target_seen"]:
+            elif (
+                vision_state["target_seen"]
+                and vision_state["target_center_count"] >= 2
+            ):
                 if vision_state["lock_heading"] is None:
                     vision_state["lock_heading"] = robot_angle
                     log(f"Approach heading locked at {robot_angle:.0f}°")
@@ -786,7 +813,9 @@ def main():
                     f"seen={vision_state['target_seen']} "
                     f"confirms={vision_state['target_confirm_count']} "
                     f"lost={vision_state['target_lost_count']} "
-                    f"lock_hdg=None)")
+                    f"lock_hdg=None)"
+                    f"center={vision_state['target_center_count']} "
+                    f"vision_age={now - vision_state['timestamp']:.2f}s ")
                 last_decision = decision
                 post_decision(decision)
 

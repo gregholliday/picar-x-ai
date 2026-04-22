@@ -52,8 +52,9 @@ SIDE_CLEAR    = 300     # Minimum side clearance for turns
 VISION_ENABLED        = True
 VISION_INTERVAL       = 3      # seconds between vision queries while searching
 VISION_TIMEOUT        = 30     # seconds to wait for model response
-TARGET_CONFIRM_NEEDED = 2      # consecutive confirmations before approaching
-APPROACH_STOP_CM      = 20     # ultrasonic distance to stop when approaching
+TARGET_CONFIRM_NEEDED = 3      # consecutive confirmations before approaching
+APPROACH_STOP_CM      = 25     # ultrasonic distance to stop when approaching
+SLOW_SPEED = 15
 
 # Search pattern
 SEARCH_FORWARD_STEPS  = 25     # loop iterations to drive forward during search
