@@ -819,14 +819,13 @@ def main():
                 last_decision = decision
                 post_decision(decision)
 
-            if not goal_reached:
-                # Use Option A turns for search rotate/turn decisions
-                if decision in ("SEARCHING_ROTATE", "SEARCH_TURN_RIGHT"):
-                    send_turn("right", OPTION_A_TURN_SPEED, TURN_ANGLE)
-                elif decision in ("SEARCH_TURN_LEFT",):
-                    send_turn("left", OPTION_A_TURN_SPEED, TURN_ANGLE)
-                else:
-                    send_drive(speed, angle)
+                if not goal_reached:
+                    if decision in ("SEARCHING_ROTATE", "SEARCH_TURN_RIGHT", "LOCKING_ALIGN_RIGHT", "APPROACH_ALIGN_RIGHT"):
+                        send_turn("right", OPTION_A_TURN_SPEED, TURN_ANGLE)
+                    elif decision in ("SEARCH_TURN_LEFT", "LOCKING_ALIGN_LEFT", "APPROACH_ALIGN_LEFT"):
+                        send_turn("left", OPTION_A_TURN_SPEED, TURN_ANGLE)
+                    else:
+                        send_drive(speed, angle)
 
             update_position(speed, angle, POLL_INTERVAL)
 
