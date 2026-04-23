@@ -14,7 +14,7 @@
 PI_IP        = "YOUR_PI_IP"       # IP address of your Raspberry Pi
 OLLAMA_IP    = "YOUR_OLLAMA_IP"   # IP of machine running Ollama
 OLLAMA_PORT  = 11434
-OLLAMA_MODEL = "qwen2.5vl:latest" # Vision model for goal detection
+OLLAMA_MODEL = "qwen3-vl:8b" # Vision model for goal detection
 
 # ── Pi Username ────────────────────────────────────────────────────────────────
 PI_USERNAME  = "pi"               # Your username on the Raspberry Pi
@@ -51,14 +51,14 @@ SIDE_CLEAR    = 300     # Minimum side clearance for turns
 # ── Vision / Goal Detection ────────────────────────────────────────────────────
 VISION_ENABLED        = True
 VISION_INTERVAL       = 3      # seconds between vision queries while searching
-VISION_TIMEOUT        = 30     # seconds to wait for model response
+VISION_TIMEOUT        = 8     # seconds to wait for model response
 TARGET_CONFIRM_NEEDED = 3      # consecutive confirmations before approaching
 APPROACH_STOP_CM      = 25     # ultrasonic distance to stop when approaching
 SLOW_SPEED = 15
 
 # Search pattern
-SEARCH_FORWARD_STEPS  = 25     # loop iterations to drive forward during search
-SEARCH_ROTATE_STEPS   = 15     # loop iterations to rotate during search
+SEARCH_FORWARD_STEPS  = 8     # loop iterations to drive forward during search
+SEARCH_ROTATE_STEPS   = 4     # loop iterations to rotate during search
 
 # ── LiDAR Orientation ──────────────────────────────────────────────────────────
 # If left/right readings are swapped, set this to True

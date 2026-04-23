@@ -92,6 +92,13 @@ POLL_INTERVAL            = 0.2
 LOCKING_VISION_INTERVAL  = 2.0
 APPROACH_VISION_INTERVAL = 1.5
 OPTION_A_TURN_SPEED      = 20   # outside wheel speed for Option A turns
+SEARCH_ROTATE_PULSE_SEC   = 0.45
+SEARCH_TURN_PULSE_SEC     = 0.35
+LOCK_ALIGN_PULSE_SEC      = 0.25
+APPROACH_ALIGN_PULSE_SEC  = 0.20
+SEARCH_FORWARD_PULSE_SEC  = 0.60
+SETTLE_AFTER_MOVE_SEC     = 0.50
+VISION_WAIT_TIMEOUT_SEC   = 3.50
 
 # Lost tolerance — how many consecutive NOT FOUND before giving up
 # Split by state: be patient when locked/approaching, fast when searching
@@ -129,6 +136,7 @@ last_decision       = "IDLE"
 decision_log        = deque(maxlen=20)
 search_phase        = "forward"
 search_step_counter = 0
+waiting_for_vision = False
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 def log(msg):
@@ -196,6 +204,24 @@ def send_turn(direction: str, speed: int = 20, angle: int = 35):
                               "angle":     angle}, timeout=0.5)
     except Exception as e:
         log(f"Turn command failed: {e}")
+
+def pulse_turn(direction: str, duration: float, speed: int = OPTION_A_TURN_SPEED, angle: int = TURN_ANGLE):
+    send_turn(direction, speed, angle)
+    time.sleep(duration)
+    send_stop()
+
+def pulse_drive(speed: int, angle: int, duration: float):
+    send_drive(speed, angle)
+    time.sleep(duration)
+    send_stop()
+
+def wait_for_vision_update(previous_ts: float, timeout: float = VISION_WAIT_TIMEOUT_SEC):
+    start = time.time()
+    while time.time() - start < timeout:
+        if vision_state["timestamp"] > previous_ts and not vision_state["processing"]:
+            return True
+        time.sleep(0.05)
+    return False
 
 def send_buzzer(sound: str = "horn"):
     try:
@@ -421,15 +447,22 @@ Be specific and concise."""
             found, where, hint, confidence = parse_vision_response(text, task)
 
             if found and confidence in ("HIGH", "MEDIUM"):
-                vision_state["target_confirm_count"] += 1
-                vision_state["target_lost_count"]     = 0
+                vision_state["target_lost_count"] = 0
 
-                if where == "center":
-                    vision_state["target_center_count"] += 1
+                if where in ("left", "center", "right"):
+                    vision_state["target_confirm_count"] += 1
+                    if where == "center":
+                        vision_state["target_center_count"] += 1
+                    else:
+                        vision_state["target_center_count"] = 0
+                    log_suffix = (
+                        f"WHERE={where} — confirms={vision_state['target_confirm_count']} "
+                        f"center={vision_state['target_center_count']}"
+                    )
                 else:
+                    # Found something, but can't place it in frame yet
                     vision_state["target_center_count"] = 0
-
-                log_suffix = f"WHERE={where} — confirms={vision_state['target_confirm_count']} center={vision_state['target_center_count']}"
+                    log_suffix = "WHERE=unknown — not locking yet"
             else:
                 vision_state["target_lost_count"] += 1
                 vision_state["target_center_count"] = 0
@@ -569,15 +602,15 @@ def decide_search(sensors):
 
         if efront < FRONT_CAUTION:
             if left > right and left > SIDE_CLEAR:
-                return SLOW_SPEED, -TURN_ANGLE, "SEARCH_TURN_LEFT"
+                return SLOW_SPEED, -TURN_ANGLE, "SEARCH_TURN_LEFT_STEP"
             elif right > SIDE_CLEAR:
-                return SLOW_SPEED, TURN_ANGLE, "SEARCH_TURN_RIGHT"
+                return SLOW_SPEED, TURN_ANGLE, "SEARCH_TURN_RIGHT_STEP"
             else:
                 search_phase        = "rotate"
                 search_step_counter = 0
-                return SLOW_SPEED, TURN_ANGLE, "SEARCH_TURN_RIGHT"
+                return SLOW_SPEED, TURN_ANGLE, "SEARCH_TURN_RIGHT_STEP"
 
-        return SLOW_SPEED, 0, "SEARCHING_FORWARD"
+        return SLOW_SPEED, 0, "SEARCHING_FORWARD_STEP"
 
     else:
         if search_step_counter >= SEARCH_ROTATE_STEPS:
@@ -586,7 +619,7 @@ def decide_search(sensors):
             log("Search: switching to FORWARD phase")
 
         robot_angle = (robot_angle + 35) % 360
-        return 0, TURN_ANGLE, "SEARCHING_ROTATE"
+        return 0, TURN_ANGLE, "SEARCHING_ROTATE_STEP"
 # ── Navigation — locking ───────────────────────────────────────────────────────
 def decide_lock(sensors):
     if sensors.get("cliff_detected"):
@@ -597,11 +630,11 @@ def decide_lock(sensors):
     ALIGN_ANGLE = int(TURN_ANGLE * 0.5)  # ~17°
 
     if where == "left":
-        return 0, -ALIGN_ANGLE, "LOCKING_ALIGN_LEFT"
+        return 0, -ALIGN_ANGLE, "LOCKING_ALIGN_LEFT_STEP"
     elif where == "right":
-        return 0, ALIGN_ANGLE, "LOCKING_ALIGN_RIGHT"
+        return 0, ALIGN_ANGLE, "LOCKING_ALIGN_RIGHT_STEP"
     else:
-        return 0, 0, "LOCKING_CENTERED"
+        return 0, 0, "LOCKING_WAIT_CENTERED"
 
 # ── Navigation — approach target ───────────────────────────────────────────────
 def decide_approach(sensors):
@@ -634,16 +667,16 @@ def decide_approach(sensors):
     ALIGN_ANGLE = int(TURN_ANGLE * 0.5)
 
     if where == "left":
-        return 0, -ALIGN_ANGLE, "APPROACH_ALIGN_LEFT"
+        return 0, -ALIGN_ANGLE, "APPROACH_ALIGN_LEFT_STEP"
 
     elif where == "right":
-        return 0, ALIGN_ANGLE, "APPROACH_ALIGN_RIGHT"
+        return 0, ALIGN_ANGLE, "APPROACH_ALIGN_RIGHT_STEP"
 
     # 🚗 ONLY MOVE FORWARD WHEN CENTERED
     if efront < FRONT_CAUTION:
-        return SLOW_SPEED, 0, "APPROACH_FORWARD_SLOW"
+        return SLOW_SPEED, 0, "APPROACH_FORWARD_STEP"
 
-    return SLOW_SPEED, 0, "APPROACH_FORWARD"
+    return SLOW_SPEED, 0, "APPROACH_FORWARD_STEP"
 
 # ── Update robot position estimate ─────────────────────────────────────────────
 def update_position(speed, angle, dt):
@@ -681,7 +714,7 @@ def main():
         f"lock:{TARGET_LOST_TOLERANCE_LOCKING}/"
         f"approach:{TARGET_LOST_TOLERANCE_APPROACH}")
     log(f"Approach: stop at {APPROACH_STOP_CM}cm, hard stop at 15cm")
-    log(f"Steering: micro-correction only during approach (±{int(TURN_ANGLE*0.2)}°)")
+    log("Control: pulse-and-settle mode enabled for search, lock, and approach")
     log(f"Speed:    base={BASE_SPEED}, slow={SLOW_SPEED}, turn={TURN_ANGLE}°, option_a={OPTION_A_TURN_SPEED}")
     log("Waiting for AUTONOMOUS mode...")
 
@@ -748,9 +781,8 @@ def main():
             else:
                 interval = VISION_INTERVAL
 
-            if VISION_ENABLED and (now - last_vision_time >= interval):
+            if VISION_ENABLED and not vision_state["processing"] and (now - last_vision_time >= interval):
                 if task:
-                    # Target detected or being confirmed — use goal query
                     query_vision_goal(task)
                 else:
                     query_vision_navigation()
@@ -819,13 +851,61 @@ def main():
                 last_decision = decision
                 post_decision(decision)
 
-                if not goal_reached:
-                    if decision in ("SEARCHING_ROTATE", "SEARCH_TURN_RIGHT", "LOCKING_ALIGN_RIGHT", "APPROACH_ALIGN_RIGHT"):
-                        send_turn("right", OPTION_A_TURN_SPEED, TURN_ANGLE)
-                    elif decision in ("SEARCH_TURN_LEFT", "LOCKING_ALIGN_LEFT", "APPROACH_ALIGN_LEFT"):
-                        send_turn("left", OPTION_A_TURN_SPEED, TURN_ANGLE)
-                    else:
-                        send_drive(speed, angle)
+            if not goal_reached:
+                prev_vision_ts = vision_state["timestamp"]
+
+                if decision == "SEARCH_ROTATE_STEP":
+                    pulse_turn("right", SEARCH_ROTATE_PULSE_SEC, OPTION_A_TURN_SPEED, TURN_ANGLE)
+                    time.sleep(SETTLE_AFTER_MOVE_SEC)
+                    wait_for_vision_update(prev_vision_ts)
+
+                elif decision == "SEARCH_TURN_RIGHT_STEP":
+                    pulse_turn("right", SEARCH_TURN_PULSE_SEC, OPTION_A_TURN_SPEED, TURN_ANGLE)
+                    time.sleep(SETTLE_AFTER_MOVE_SEC)
+                    wait_for_vision_update(prev_vision_ts)
+
+                elif decision == "SEARCH_TURN_LEFT_STEP":
+                    pulse_turn("left", SEARCH_TURN_PULSE_SEC, OPTION_A_TURN_SPEED, TURN_ANGLE)
+                    time.sleep(SETTLE_AFTER_MOVE_SEC)
+                    wait_for_vision_update(prev_vision_ts)
+
+                elif decision == "SEARCH_FORWARD_STEP":
+                    pulse_drive(SLOW_SPEED, 0, SEARCH_FORWARD_PULSE_SEC)
+                    time.sleep(SETTLE_AFTER_MOVE_SEC)
+                    wait_for_vision_update(prev_vision_ts)
+
+                elif decision == "LOCK_ALIGN_RIGHT_STEP":
+                    pulse_turn("right", LOCK_ALIGN_PULSE_SEC, OPTION_A_TURN_SPEED, TURN_ANGLE)
+                    time.sleep(SETTLE_AFTER_MOVE_SEC)
+                    wait_for_vision_update(prev_vision_ts)
+
+                elif decision == "LOCK_ALIGN_LEFT_STEP":
+                    pulse_turn("left", LOCK_ALIGN_PULSE_SEC, OPTION_A_TURN_SPEED, TURN_ANGLE)
+                    time.sleep(SETTLE_AFTER_MOVE_SEC)
+                    wait_for_vision_update(prev_vision_ts)
+
+                elif decision == "LOCK_WAIT_CENTERED":
+                    send_stop()
+                    time.sleep(SETTLE_AFTER_MOVE_SEC)
+                    wait_for_vision_update(prev_vision_ts)
+
+                elif decision == "APPROACH_ALIGN_RIGHT_STEP":
+                    pulse_turn("right", APPROACH_ALIGN_PULSE_SEC, OPTION_A_TURN_SPEED, TURN_ANGLE)
+                    time.sleep(SETTLE_AFTER_MOVE_SEC)
+                    wait_for_vision_update(prev_vision_ts)
+
+                elif decision == "APPROACH_ALIGN_LEFT_STEP":
+                    pulse_turn("left", APPROACH_ALIGN_PULSE_SEC, OPTION_A_TURN_SPEED, TURN_ANGLE)
+                    time.sleep(SETTLE_AFTER_MOVE_SEC)
+                    wait_for_vision_update(prev_vision_ts)
+
+                elif decision == "APPROACH_FORWARD_STEP":
+                    pulse_drive(SLOW_SPEED, 0, 0.40)
+                    time.sleep(SETTLE_AFTER_MOVE_SEC)
+                    wait_for_vision_update(prev_vision_ts)
+
+                else:
+                    send_drive(speed, angle)
 
             update_position(speed, angle, POLL_INTERVAL)
 
