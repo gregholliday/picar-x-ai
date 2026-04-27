@@ -610,7 +610,7 @@ def decide_search(sensors):
                 search_step_counter = 0
                 return SLOW_SPEED, TURN_ANGLE, "SEARCH_TURN_RIGHT_STEP"
 
-        return SLOW_SPEED, 0, "SEARCHING_FORWARD_STEP"
+        return SLOW_SPEED, 0, "SEARCH_FORWARD_STEP"
 
     else:
         if search_step_counter >= SEARCH_ROTATE_STEPS:
@@ -619,7 +619,7 @@ def decide_search(sensors):
             log("Search: switching to FORWARD phase")
 
         robot_angle = (robot_angle + 35) % 360
-        return 0, TURN_ANGLE, "SEARCHING_ROTATE_STEP"
+        return 0, TURN_ANGLE, "SEARCH_ROTATE_STEP"
 # ── Navigation — locking ───────────────────────────────────────────────────────
 def decide_lock(sensors):
     if sensors.get("cliff_detected"):
@@ -630,11 +630,11 @@ def decide_lock(sensors):
     ALIGN_ANGLE = int(TURN_ANGLE * 0.5)  # ~17°
 
     if where == "left":
-        return 0, -ALIGN_ANGLE, "LOCKING_ALIGN_LEFT_STEP"
+        return 0, -ALIGN_ANGLE, "LOCK_ALIGN_LEFT_STEP"
     elif where == "right":
-        return 0, ALIGN_ANGLE, "LOCKING_ALIGN_RIGHT_STEP"
+        return 0, ALIGN_ANGLE, "LOCK_ALIGN_RIGHT_STEP"
     else:
-        return 0, 0, "LOCKING_WAIT_CENTERED"
+        return 0, 0, "LOCK_WAIT_CENTERED"
 
 # ── Navigation — approach target ───────────────────────────────────────────────
 def decide_approach(sensors):
@@ -645,7 +645,16 @@ def decide_approach(sensors):
     vision_age = now - vision_state.get("timestamp", 0)
 
     # 🚫 DO NOT MOVE if vision is stale or processing
-    if vision_state["processing"] or vision_age > 1.0:
+    if vision_state["processing"]:
+        # If target is already strongly confirmed and centered, allow a small creep
+        if (
+            vision_state["target_confirm_count"] >= TARGET_CONFIRM_NEEDED
+            and vision_state["target_center_count"] >= 2
+        ):
+            return SLOW_SPEED, 0, "APPROACH_FORWARD_STEP"
+        return 0, 0, "APPROACH_WAIT_VISION"
+
+    if vision_age > 10.0:
         return 0, 0, "APPROACH_WAIT_VISION"
 
     us_cm  = sensors.get("ultrasonic_cm", 999)
