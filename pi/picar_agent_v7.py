@@ -606,7 +606,7 @@ def set_task_status(status: str = "SEARCHING"):
     state["task_status"] = status
     return {"status": state["task_status"]}
 
-@app.post("api/estop")
+@app.post("/api/estop")
 def estop():
     state["estop_active"] = True
 
