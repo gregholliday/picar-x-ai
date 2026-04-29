@@ -381,6 +381,7 @@ def get_status():
         "vision_hint":        state["vision_hint"],
         "navigator_decision": state["navigator_decision"],
         "navigator_log":      state["navigator_log"],
+        "estop_active":       state["estop_active"],
     }
 
 @app.get("/api/sensors")
