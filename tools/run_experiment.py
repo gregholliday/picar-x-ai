@@ -6,6 +6,7 @@ import subprocess
 import os
 import signal
 import json
+import select
 from datetime import datetime
 
 PI = "http://192.168.1.225:8000"
@@ -56,7 +57,19 @@ except:
 requests.post(f"{PI}/api/task", params={"task": TASK})
 
 # Set mode autonomous
-requests.post(f"{PI}/api/mode", params={"mode": "autonomous"})
+requests.post(f"{PI}/api/mode/autonomous")
+
+time.sleep(1)
+
+status = requests.get(f"{PI}/api/status", timeout=2).json()
+print(f"Mode after start: {status.get('mode')}")
+print(f"E-stop active: {status.get('estop_active')}")
+
+if status.get("estop_active"):
+    raise RuntimeError("E-stop is still active after reset")
+
+if status.get("mode") != "autonomous":
+    raise RuntimeError(f"Failed to enter autonomous mode: {status.get('mode')}")
 
 log_file = open(log_path, "w")
 
@@ -71,24 +84,42 @@ start_time = time.time()
 
 try:
     while True:
-        line = proc.stdout.readline()
-
-        if line:
-            print(line, end="")
-            log_file.write(line)
-            log_file.flush()
-
-            if "GOAL REACHED" in line:
-                goal_reached = True
-                print("🎯 Goal reached!")
-                break
-
         elapsed = time.time() - start_time
 
         if elapsed > TIME_LIMIT:
             timed_out = True
             print("⏱ Timeout reached")
             break
+
+        ready, _, _ = select.select([proc.stdout], [], [], 0.5)
+
+        if ready:
+            line = proc.stdout.readline()
+
+            if line:
+                print(line, end="")
+                log_file.write(line)
+                log_file.flush()
+
+                if "GOAL REACHED" in line:
+                    goal_reached = True
+                    print("🎯 Goal reached!")
+                    break
+
+        try:
+            status = requests.get(f"{PI}/api/status", timeout=1).json()
+
+            if status.get("estop_active"):
+                print("🚨 E-stop is active")
+                break
+
+            if status.get("task_found") or status.get("task_status") == "GOAL_REACHED":
+                goal_reached = True
+                print("🎯 Goal reached by status")
+                break
+
+        except Exception:
+            pass
 
 except Exception as e:
     print(f"Error: {e}")
