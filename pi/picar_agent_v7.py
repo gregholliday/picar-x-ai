@@ -98,6 +98,7 @@ except Exception as e:
 # ── Constants ──────────────────────────────────────────────────────────────────
 MAX_DIST_MM = 6000  # mm — LiDAR clip distance
 
+
 # ── Shared state ───────────────────────────────────────────────────────────────
 state = {
     "mode":           "manual",
@@ -118,7 +119,8 @@ state = {
     "vision_description": "",
     "vision_hint":        "none",       
     "navigator_decision": "IDLE",
-    "navigator_log":      []   
+    "navigator_log":      [],
+    "estop_active":  False,   
 }
 
 # ── Cleanup handler ────────────────────────────────────────────────────────────
@@ -473,6 +475,9 @@ def set_mode(mode: str):
 
 @app.post("/api/drive")
 def drive(speed: int = 0, angle: int = 0):
+    if state["estop_active"]:
+        return {"error": "ESTOP ACTIVE"}
+
     if state["mode"] == "manual":
         speed = max(-100, min(100, speed))
         angle = max(-40,  min(40,  angle + STEERING_TRIM))
@@ -498,6 +503,9 @@ def turn(direction: str = "right", speed: int = 20, angle: int = 35):
     angle: front wheel steering angle (default 35)
     Only works in autonomous mode.
     """
+    if state["estop_active"]:
+        return {"error": "ESTOP ACTIVE"}
+
     if state["mode"] == "autonomous" and not state["reflex_active"]:
         option_a_turn(direction, speed, angle)
         state["speed"] = speed
@@ -596,6 +604,28 @@ def task_found():
 def set_task_status(status: str = "SEARCHING"):
     state["task_status"] = status
     return {"status": state["task_status"]}
+
+@app.post("api/estop")
+def estop():
+    state["estop_active"] = True
+
+    px.stop()
+    px.set_dir_servo_angle(0)
+
+    state["mode"] = manual
+    state["navigator_log"].append("ESTOP ACTIVATED")
+
+    return {"status": "ESTOP ACTIVATED"}
+
+@app.post("/api/estop/reset")
+def estop_reset():
+    state["estop_active"] = False
+    state["navigator_log"].append("ESTOP CLEARED")
+    return {"status": "ESTOP CLEARED"}
+
+@app.get("/api/estop")
+def estop_status():
+    return {"estop_active": state["estop_active"]}
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
