@@ -613,7 +613,7 @@ def estop():
     px.stop()
     px.set_dir_servo_angle(0)
 
-    state["mode"] = manual
+    state["mode"] = "manual"
     state["navigator_log"].append("ESTOP ACTIVATED")
 
     return {"status": "ESTOP ACTIVATED"}
