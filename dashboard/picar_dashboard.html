@@ -920,8 +920,11 @@
               onclick="setMode('autonomous')">
               ◉ AUTO
             </button>
-            <button class="btn btn-stop" onclick="stopCar()">
+            <button class="btn btn-stop" onclick="eStop()">
               ■ EMERGENCY STOP
+            </button>
+            <button class="btn btn-auto" onclick="resetEStop()">
+              ■ RESET EMERGENCY STOP
             </button>
             <button class="btn" id="btn-shutdown"
               style="grid-column:1/-1;border-color:#4a1942;color:#c084fc;font-size:0.55rem;padding:10px;"
@@ -1342,6 +1345,24 @@
       if (driveInterval) { clearInterval(driveInterval); driveInterval = null; }
       try {
         await fetch(`${AGENT_URL}/api/stop`, { method: 'POST' });
+      } catch(e) {}
+    }
+
+    async function eStop() {
+      driveState.speed = 0;
+      driveState.angle = 0;
+      if (driveInterval) { clearInterval(driveInterval); driveInterval = null; }
+      try {
+        await fetch(`${AGENT_URL}/api/estop`, { method: 'POST' });
+      } catch(e) {}
+    }
+
+    async function resetEStop() {
+      driveState.speed = 0;
+      driveState.angle = 0;
+      if (driveInterval) { clearInterval(driveInterval); driveInterval = null; }
+      try {
+        await fetch(`${AGENT_URL}/api/estop/reset`, { method: 'POST' });
       } catch(e) {}
     }
 
