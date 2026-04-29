@@ -1,72 +1,122 @@
 #!/usr/bin/env python3
 
-import argparse
-import json
+import requests
+import time
+import subprocess
 import os
 import signal
-import subprocess
-import sys
-import time
+import json
 from datetime import datetime
-from pathlib import Path
 
-import requests
+PI = "http://192.168.1.225:8000"
+TASK = "Find the tea pot"
+TIME_LIMIT = 300  # 5 minutes
 
+run_id = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+run_dir = f"/mnt/ai-lab/picar-x-ai/experiments/{run_id}"
+os.makedirs(run_dir, exist_ok=True)
 
-DEFAULT_PI = "http://192.168.1.225:8000"
-DEFAULT_RUN_ROOT = "/mnt/ai-lab/picar-x-ai/experiments/runs"
-DEFAULT_KB_ROOT = "/mnt/ai-lab/knowledge-base/wiki/picar/experiments"
+log_path = f"{run_dir}/navigator.log"
+result_path = f"{run_dir}/result.json"
 
+goal_reached = False
+timed_out = False
+estop_used = False
 
-def api_post(base_url, path, params=None, timeout=2):
-    url = f"{base_url}{path}"
-    r = requests.post(url, params=params or {}, timeout=timeout)
-    r.raise_for_status()
-    return r.json() if r.text else {}
-
-
-def api_get(base_url, path, timeout=2):
-    url = f"{base_url}{path}"
-    r = requests.get(url, timeout=timeout)
-    r.raise_for_status()
-    return r.json()
-
-
-def safe_estop(base_url):
+def estop():
+    global estop_used
     try:
-        api_post(base_url, "/api/estop", timeout=2)
-        print("E-stop activated.")
+        requests.post(f"{PI}/api/estop", timeout=2)
+        estop_used = True
+        print("🚨 E-STOP SENT")
     except Exception as e:
-        print(f"WARNING: failed to activate E-stop: {e}")
+        print(f"Failed to send E-stop: {e}")
 
+def cleanup():
+    estop()
+    print("Cleanup complete")
 
-def set_manual(base_url):
+def signal_handler(sig, frame):
+    print("\nInterrupted!")
+    cleanup()
+    exit(1)
+
+signal.signal(signal.SIGINT, signal_handler)
+
+print(f"Starting run {run_id}")
+print(f"Task: {TASK}")
+
+# Reset estop if needed
+try:
+    requests.post(f"{PI}/api/estop/reset", timeout=2)
+except:
+    pass
+
+# Set task
+requests.post(f"{PI}/api/task", params={"task": TASK})
+
+# Set mode autonomous
+requests.post(f"{PI}/api/mode", params={"mode": "autonomous"})
+
+log_file = open(log_path, "w")
+
+proc = subprocess.Popen(
+    ["journalctl", "-u", "picar-navigator", "-f"],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+    text=True
+)
+
+start_time = time.time()
+
+try:
+    while True:
+        line = proc.stdout.readline()
+
+        if line:
+            print(line, end="")
+            log_file.write(line)
+            log_file.flush()
+
+            if "GOAL REACHED" in line:
+                goal_reached = True
+                print("🎯 Goal reached!")
+                break
+
+        elapsed = time.time() - start_time
+
+        if elapsed > TIME_LIMIT:
+            timed_out = True
+            print("⏱ Timeout reached")
+            break
+
+except Exception as e:
+    print(f"Error: {e}")
+
+finally:
+    proc.terminate()
+    log_file.close()
+
+    if not goal_reached:
+        estop()
+
     try:
-        api_post(base_url, "/api/mode", params={"mode": "manual"}, timeout=2)
-    except Exception as e:
-        print(f"WARNING: failed to set manual mode: {e}")
+        status = requests.get(f"{PI}/api/status", timeout=2).json()
+    except:
+        status = {}
 
+    result = {
+        "run_id": run_id,
+        "task": TASK,
+        "goal_reached": goal_reached,
+        "timed_out": timed_out,
+        "estop_used": estop_used,
+        "duration_sec": round(time.time() - start_time, 2),
+        "final_status": status
+    }
 
-def write_json(path, data):
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+    with open(result_path, "w") as f:
+        json.dump(result, f, indent=2)
 
-
-def write_summary_md(path, data):
-    md = f"""# PiCar Experiment {data["run_id"]}
-
-## Summary
-
-- Task: `{data["task"]}`
-- Started: {data["started_at"]}
-- Ended: {data["ended_at"]}
-- Duration seconds: {data["duration_sec"]}
-- Result: **{data["result"]}**
-- Goal reached: {data["goal_reached"]}
-- Timed out: {data["timed_out"]}
-- E-stop used: {data["estop_used"]}
-
-## Final Status
-
-```json
-{json.dumps(data.get("final_status", {}), indent=2)}
+    print("\nRun complete")
+    print(json.dumps(result, indent=2))
