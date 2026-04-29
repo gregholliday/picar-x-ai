@@ -718,6 +718,8 @@ def decide_approach(sensors):
         return 0, -align_angle, "APPROACH_ALIGN_LEFT_STEP"
     if where == "right":
         return 0, align_angle, "APPROACH_ALIGN_RIGHT_STEP"
+    if where == "unknown":
+        return SLOW_SPEED, 0, "APPROACH_FORWARD_STEP"
     return SLOW_SPEED, 0, "APPROACH_FORWARD_STEP"
 
 # ── Position estimate ──────────────────────────────────────────────────────────
@@ -899,7 +901,7 @@ def main():
 
             if not task:
                 speed, angle, decision = decide_navigate(sensors)
-            elif vision_state["target_seen"] and vision_state["target_center_count"] >= 2:
+            elif vision_state["target_seen"]:
                 if vision_state["lock_heading"] is None:
                     vision_state["lock_heading"] = robot_angle
                     log(f"Approach heading locked at {robot_angle:.0f}°")
