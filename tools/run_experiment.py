@@ -11,7 +11,7 @@ from datetime import datetime
 
 PI = "http://192.168.1.225:8000"
 TASK = "Find the tea pot"
-TIME_LIMIT = 300  # 5 minutes
+TIME_LIMIT = 180  # 5 minutes
 
 run_id = datetime.now().strftime("%Y-%m-%d_%H%M%S")
 run_dir = f"/mnt/ai-lab/picar-x-ai/experiments/{run_id}"
@@ -53,6 +53,8 @@ try:
 except:
     pass
 
+requests.post(f"{PI}/api/navigator/log/clear", timeout=2)
+
 # Set task
 requests.post(f"{PI}/api/task", params={"task": TASK})
 
@@ -74,7 +76,7 @@ if status.get("mode") != "autonomous":
 log_file = open(log_path, "w")
 
 proc = subprocess.Popen(
-    ["journalctl", "-u", "picar-navigator", "-f"],
+    ["journalctl", "-u", "picar-navigator", "-f", "-n", "0", "-o", "cat"],
     stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT,
     text=True

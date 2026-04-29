@@ -628,6 +628,11 @@ def estop_reset():
 def estop_status():
     return {"estop_active": state["estop_active"]}
 
+@app.post("/api/navigator/log/clear")
+def clear_navigator_log():
+    state["navigator_log"] = []
+    return {"status": "navigator log cleared"}
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
