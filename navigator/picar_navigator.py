@@ -143,6 +143,7 @@ vision_state = {
     "processing": False,
     "query_count": 0,
     "last_query_duration": 0.0,
+    "last_known_where": "center",
 }
 
 # ── Room map ───────────────────────────────────────────────────────────────────
@@ -475,6 +476,10 @@ Accept similar words such as kettle, tea kettle, teapot, or tea pot when the tas
             text, elapsed = _ollama_generate(prompt, image_b64)
             found, where, hint, confidence = parse_vision_response(text, task)
 
+            # Track last known good direction
+            if where in ("left", "center", "right"):
+                vision_state["last_known_where"] = where
+
             if found and confidence in ("HIGH", "MEDIUM"):
                 vision_state["target_lost_count"] = 0
                 vision_state["vision_timeout_count"] = 0
@@ -659,6 +664,11 @@ def decide_lock(sensors):
         return -SLOW_SPEED, 0, "CLIFF_BACKUP"
 
     where = vision_state.get("target_where", "unknown")
+
+    # Fallback if unknown
+    if where == "unknown":
+        where = vision_state.get("last_known_where", "center")
+
     align_angle = int(TURN_ANGLE * 0.5)
 
     if where == "left":
@@ -675,7 +685,11 @@ def decide_approach(sensors):
     d = corrected_distances(sensors)
     efront = d["efront"]
     us_cm = d["us_cm"]
-    where = vision_state.get("target_where", "center")
+    where = vision_state.get("target_where", "unknown")
+
+    # Fallback if unknown
+    if where == "unknown":
+        where = vision_state.get("last_known_where", "center")
 
     # Distance safety must win before vision logic.
     if efront <= APPROACH_HARD_STOP_MM:
@@ -905,7 +919,10 @@ def main():
                         send_buzzer("horn")
 
                     threading.Thread(target=celebrate, daemon=True).start()
-            elif vision_state["target_confirm_count"] > 0 or vision_state["target_weak_count"] >= 2:
+            elif (
+                (vision_state["target_confirm_count"] > 0 or vision_state["target_weak_count"] >= 2)
+                and vision_state.get("target_where") in ("left", "center", "right")
+            ):
                 speed, angle, decision = decide_lock(sensors)
                 post_task_status("LOCKING")
             else:
