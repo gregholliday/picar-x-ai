@@ -53,12 +53,15 @@ AGENT_URL = f"http://{PI_IP}:{AGENT_PORT}"
 # ── Session config ─────────────────────────────────────────────────────────────
 SESSION_DURATION  = 180     # seconds (3 minutes)
 POLL_RATE_HZ      = 10      # sensor polls per second
-DRIVE_SPEED       = 20      # cruising speed (slow for small track)
-CORNER_SPEED      = 15      # speed during corner turns
+DRIVE_SPEED       = 15      # cruising speed (slow for small track)
+CORNER_SPEED      = 12      # speed during corner turns
 CORRECTION_ANGLE  = 15      # steering angle for boundary correction
 CORNER_ANGLE      = 30      # steering angle for corner turns
-CORNER_DURATION   = 0.5     # seconds to hold corner turn
+CORNER_DURATION   = 0.8     # seconds to hold corner turn (longer = tighter turn)
 CORRECTION_COOLDOWN = 0.2   # minimum seconds between corrections
+
+# Off-track detection — if ALL sensors below this, car is off the plywood
+OFF_TRACK_THRESHOLD = 800   # all three sensors must be below this to trigger
 
 # ── Grayscale thresholds (plywood surface, black duct tape) ───────────────────
 # Tape reads LOW (~194-361), plywood reads HIGH (~1457-1512)
@@ -128,6 +131,7 @@ def detect_boundaries(gs):
     Analyze grayscale readings and return navigation decision.
 
     Returns one of:
+      'OFF_TRACK'    — all sensors below OFF_TRACK_THRESHOLD (car off plywood)
       'CORNER'       — both left and right on outer tape simultaneously
       'RIGHT_OUTER'  — right sensor on outer boundary tape
       'LEFT_OUTER'   — left sensor on outer boundary tape
@@ -135,6 +139,11 @@ def detect_boundaries(gs):
       'CLEAR'        — no tape detected
     """
     right, center, left = read_grayscale(gs)
+
+    # Off-track detection — all valid sensors reading very low = off plywood
+    valid_readings = [v for v in [right, center, left] if v is not None]
+    if len(valid_readings) >= 2 and all(v < OFF_TRACK_THRESHOLD for v in valid_readings):
+        return 'OFF_TRACK'
 
     right_tape  = on_tape(right,  GS_THRESHOLD_RIGHT)
     center_tape = on_tape(center, GS_THRESHOLD_CENTER)
@@ -273,6 +282,7 @@ def main():
                     "gs_threshold_left":   GS_THRESHOLD_LEFT,
                     "gs_threshold_center": GS_THRESHOLD_CENTER,
                     "gs_threshold_right":  GS_THRESHOLD_RIGHT,
+                    "off_track_threshold": OFF_TRACK_THRESHOLD,
                 }
             })
 
@@ -319,7 +329,41 @@ def main():
                 now      = time.time()
                 correction_ready = (now - last_correction) > CORRECTION_COOLDOWN
 
-                if boundary == 'CORNER' and correction_ready:
+                if boundary == 'OFF_TRACK':
+                    # All sensors off plywood — stop immediately
+                    print(f"OFF TRACK — stopping  gs={gs}")
+                    stop()
+                    current_speed = 0
+                    current_angle = 0
+
+                    entry = build_log_entry(
+                        sensors, "STOP", 0, 0, "OFF_TRACK"
+                    )
+                    log_entries.append(entry)
+                    write_log(log_f, entry)
+
+                    # Wait for manual intervention — poll until back on plywood
+                    print("  Waiting for car to be placed back on track...")
+                    while True:
+                        time.sleep(0.5)
+                        sensors2 = api("/api/sensors")
+                        if sensors2 is None:
+                            continue
+                        gs2 = sensors2.get("grayscale", [0, 0, 0])
+                        r2, c2, l2 = read_grayscale(gs2)
+                        valid2 = [v for v in [r2, c2, l2] if v is not None]
+                        if valid2 and any(v >= OFF_TRACK_THRESHOLD for v in valid2):
+                            print("  Back on track — resuming in 2 seconds...")
+                            time.sleep(2)
+                            set_mode("autonomous")
+                            drive(DRIVE_SPEED, 0)
+                            current_speed = DRIVE_SPEED
+                            break
+
+                    time.sleep(loop_interval)
+                    continue
+
+                elif boundary == 'CORNER' and correction_ready:
                     # Both sensors on tape — corner detected, turn right
                     print(f"CORNER — turning right  gs={gs}")
                     drive(CORNER_SPEED, CORNER_ANGLE)
@@ -412,6 +456,7 @@ def main():
             print(f"  Estimated laps:  {summary['estimated_laps']}")
             print(f"  Left boundary:   {summary['left_boundary_events']}")
             print(f"  Right boundary:  {summary['right_boundary_events']}")
+            print(f"  Off track:       {summary['off_track_events']}")
             print(f"  Sensor errors:   {summary['sensor_errors']}")
             print(f"  Log saved:       {LOG_FILE}")
             print("=" * 60)
