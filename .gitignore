@@ -37,3 +37,5 @@ config_local.py
 dashboard/index.html
 picar-spectator/Dockerfile
 picar-spectator/index.html
+
+experiments/
