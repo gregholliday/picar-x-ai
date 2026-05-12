@@ -116,13 +116,13 @@ def detect_boundaries(gs):
     center_val = gs[1]
     left_val   = gs[2]
 
-    # Right boundary: right sensor on tape
-    right_boundary = right_val < GS_THRESHOLD_RIGHT
+    # Ignore zero readings — sensor dropout, not tape
+    if right_val == 0 or left_val == 0:
+        return False, False
 
-    # Left boundary: left sensor on tape
-    # Center used as confirmation to reduce false positives on variable floor
-    left_boundary = (left_val < GS_THRESHOLD_LEFT) or \
-                    (center_val < GS_THRESHOLD_CENTER and left_val < 350)
+    right_boundary = right_val < GS_THRESHOLD_RIGHT
+    left_boundary  = (left_val < GS_THRESHOLD_LEFT) or \
+                     (center_val < GS_THRESHOLD_CENTER and left_val < 350)
 
     return left_boundary, right_boundary
 
