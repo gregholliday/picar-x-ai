@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-track_navigator.py — PiCar-X Octagon Track Navigator v2
+track_navigator.py — PiCar-X Oval Track Navigator v3
 
 Architecture:
   - Runs on Fedora machine
@@ -9,7 +9,7 @@ Architecture:
   - Runs for SESSION_DURATION seconds then stops
   - Writes a detailed JSONL log for post-session analysis
 
-Track: black duct tape on plywood, octagon shape, ~4x4 feet, 15" lane
+Track: masking tape on garage floor, oval shape, ~15" lane
 Direction: clockwise
 
 Grayscale sensor orientation (confirmed by calibration):
@@ -17,17 +17,19 @@ Grayscale sensor orientation (confirmed by calibration):
   - gs[1] = CENTER sensor
   - gs[2] = LEFT sensor
 
-Thresholds (black duct tape on plywood):
-  - Plywood reads ~1457-1512 (HIGH)
-  - Black tape reads ~194-361 (LOW)
-  - Values BELOW threshold = tape detected
+Thresholds (masking tape on garage floor):
+  - Garage floor reads LOW (~316-1145)
+  - Masking tape reads HIGH (~868-1463)
+  - Values ABOVE threshold = tape detected
 
-Corner detection (grayscale-only, no LiDAR):
-  - BOTH left+right sensors on tape simultaneously = corner
-  - Single sensor on tape = boundary correction
-  - RIGHT sensor on outer boundary = steer left (correct toward center)
-  - LEFT sensor on outer boundary = steer right (correct toward center)
-  - Either sensor on INNER boundary = steer away from inner line
+Corner detection:
+  - Primary: grayscale both sensors on tape simultaneously
+  - Secondary: LiDAR front distance below CORNER_TRIGGER_MM
+  - Car slows when front distance below CORNER_SLOW_MM
+
+Off-track detection:
+  - All sensors below OFF_TRACK_THRESHOLD = car off expected surface
+  - Car stops and waits for manual replacement
 """
 
 import requests
@@ -51,27 +53,32 @@ except ImportError:
 AGENT_URL = f"http://{PI_IP}:{AGENT_PORT}"
 
 # ── Session config ─────────────────────────────────────────────────────────────
-SESSION_DURATION  = 180     # seconds (3 minutes)
-POLL_RATE_HZ      = 10      # sensor polls per second
-DRIVE_SPEED       = 15      # cruising speed (slow for small track)
-CORNER_SPEED      = 12      # speed during corner turns
-CORRECTION_ANGLE  = 15      # steering angle for boundary correction
-CORNER_ANGLE      = 30      # steering angle for corner turns
-CORNER_DURATION   = 0.8     # seconds to hold corner turn (longer = tighter turn)
-CORRECTION_COOLDOWN = 0.2   # minimum seconds between corrections
+SESSION_DURATION    = 180     # seconds (3 minutes)
+POLL_RATE_HZ        = 10      # sensor polls per second
+DRIVE_SPEED         = 20      # cruising speed
+CORNER_SPEED        = 15      # speed during corner turns
+CORRECTION_ANGLE    = 15      # steering angle for boundary correction
+CORNER_ANGLE        = 30      # steering angle for corner turns
+CORNER_DURATION     = 0.8     # seconds to hold corner turn
+CORRECTION_COOLDOWN = 0.2     # minimum seconds between corrections
 
-# Off-track detection — if ALL sensors below this, car is off the plywood
-OFF_TRACK_THRESHOLD = 800   # all three sensors must be below this to trigger
+# ── LiDAR corner detection ─────────────────────────────────────────────────────
+CORNER_SLOW_MM      = 1200    # front distance to start slowing
+CORNER_TRIGGER_MM   = 700     # front distance to execute turn
 
-# ── Grayscale thresholds (plywood surface, black duct tape) ───────────────────
-# Tape reads LOW (~194-361), plywood reads HIGH (~1457-1512)
-# Values BELOW threshold = tape detected
-GS_THRESHOLD_LEFT   = 850
-GS_THRESHOLD_CENTER = 850
-GS_THRESHOLD_RIGHT  = 900
+# ── Grayscale thresholds (masking tape on garage floor) ───────────────────────
+# Tape reads HIGH (~868-1463), floor reads LOW (~316-1145)
+# Values ABOVE threshold = tape detected
+GS_THRESHOLD_LEFT   = 700
+GS_THRESHOLD_CENTER = 850     # weak signal — confirmation only
+GS_THRESHOLD_RIGHT  = 1000
 
-# Zero readings = sensor dropout — always ignore
-GS_ZERO_IGNORE = 50   # anything below this is a dropout, not tape
+# Zero/dropout detection
+GS_ZERO_IGNORE      = 50
+
+# Off-track: all sensors below this = car off expected surface
+# Set below minimum tape reading but above typical floor reading
+OFF_TRACK_THRESHOLD = 600
 
 # ── Log file ───────────────────────────────────────────────────────────────────
 LOG_DIR  = os.path.expanduser("~/picar-logs")
@@ -105,7 +112,7 @@ def set_mode(mode):
     api(f"/api/mode/{mode}", method="post")
 
 
-# ── Grayscale detection ────────────────────────────────────────────────────────
+# ── Grayscale helpers ──────────────────────────────────────────────────────────
 def read_grayscale(gs):
     """
     Parse grayscale readings, ignoring dropouts.
@@ -113,7 +120,7 @@ def read_grayscale(gs):
     gs = [right, center, left] per PiCar-X library ordering.
     """
     def valid(v):
-        return v if v > GS_ZERO_IGNORE else None
+        return v if v is not None and v > GS_ZERO_IGNORE else None
 
     right  = valid(gs[0]) if len(gs) > 0 else None
     center = valid(gs[1]) if len(gs) > 1 else None
@@ -122,8 +129,8 @@ def read_grayscale(gs):
 
 
 def on_tape(val, threshold):
-    """True if valid reading and below tape threshold."""
-    return val is not None and val < threshold
+    """True if valid reading and ABOVE tape threshold."""
+    return val is not None and val > threshold
 
 
 def detect_boundaries(gs):
@@ -131,16 +138,16 @@ def detect_boundaries(gs):
     Analyze grayscale readings and return navigation decision.
 
     Returns one of:
-      'OFF_TRACK'    — all sensors below OFF_TRACK_THRESHOLD (car off plywood)
-      'CORNER'       — both left and right on outer tape simultaneously
+      'OFF_TRACK'    — all sensors below OFF_TRACK_THRESHOLD
+      'CORNER'       — both left and right on tape simultaneously
       'RIGHT_OUTER'  — right sensor on outer boundary tape
       'LEFT_OUTER'   — left sensor on outer boundary tape
-      'CENTER_TAPE'  — center sensor on tape (inner boundary or crossing)
+      'CENTER_TAPE'  — center sensor on tape only
       'CLEAR'        — no tape detected
     """
     right, center, left = read_grayscale(gs)
 
-    # Off-track detection — all valid sensors reading very low = off plywood
+    # Off-track: all valid sensors reading low
     valid_readings = [v for v in [right, center, left] if v is not None]
     if len(valid_readings) >= 2 and all(v < OFF_TRACK_THRESHOLD for v in valid_readings):
         return 'OFF_TRACK'
@@ -153,14 +160,12 @@ def detect_boundaries(gs):
     if right_tape and left_tape:
         return 'CORNER'
 
-    # Single outer sensor on tape = boundary correction
     if right_tape:
         return 'RIGHT_OUTER'
 
     if left_tape:
         return 'LEFT_OUTER'
 
-    # Center only = crossing inner boundary or track center line
     if center_tape:
         return 'CENTER_TAPE'
 
@@ -208,29 +213,34 @@ def write_summary(entries, duration):
     corners      = sum(1 for e in entries if e.get("event") == "CORNER")
     left_events  = sum(1 for e in entries if e.get("event") == "LEFT_OUTER")
     right_events = sum(1 for e in entries if e.get("event") == "RIGHT_OUTER")
+    off_track    = sum(1 for e in entries if e.get("event") == "OFF_TRACK")
+    lidar_corners = sum(1 for e in entries if e.get("event") == "LIDAR_CORNER")
     errors       = sum(1 for e in entries if e.get("event") == "SENSOR_ERROR")
 
     return {
-        "type":                  "session_summary",
-        "session_duration":      duration,
-        "total_entries":         len(entries),
-        "decision_counts":       decisions,
-        "corner_turns":          corners,
-        "left_boundary_events":  left_events,
-        "right_boundary_events": right_events,
-        "sensor_errors":         errors,
-        "estimated_laps":        round(corners / 8, 1) if corners >= 8 else 0,
+        "type":                   "session_summary",
+        "session_duration":       duration,
+        "total_entries":          len(entries),
+        "decision_counts":        decisions,
+        "corner_turns_grayscale": corners,
+        "corner_turns_lidar":     lidar_corners,
+        "left_boundary_events":   left_events,
+        "right_boundary_events":  right_events,
+        "off_track_events":       off_track,
+        "sensor_errors":          errors,
+        "estimated_laps":         round((corners + lidar_corners) / 4, 1),
     }
 
 
 # ── Main navigator loop ────────────────────────────────────────────────────────
 def main():
     print("=" * 60)
-    print("  PiCar-X Octagon Track Navigator v2")
+    print("  PiCar-X Oval Track Navigator v3")
     print(f"  Agent:    {AGENT_URL}")
     print(f"  Duration: {SESSION_DURATION}s")
     print(f"  Speed:    {DRIVE_SPEED}  Corner speed: {CORNER_SPEED}")
-    print(f"  GS thresholds: L={GS_THRESHOLD_LEFT} C={GS_THRESHOLD_CENTER} R={GS_THRESHOLD_RIGHT}")
+    print(f"  GS thresholds: L>{GS_THRESHOLD_LEFT} C>{GS_THRESHOLD_CENTER} R>{GS_THRESHOLD_RIGHT}")
+    print(f"  LiDAR corner trigger: <{CORNER_TRIGGER_MM}mm  slow: <{CORNER_SLOW_MM}mm")
     print(f"  Log:      {LOG_FILE}")
     print("=" * 60)
 
@@ -264,6 +274,7 @@ def main():
     loop_interval   = 1.0 / POLL_RATE_HZ
     current_speed   = DRIVE_SPEED
     current_angle   = 0
+    in_corner       = False
 
     try:
         with open(LOG_FILE, "w") as log_f:
@@ -273,16 +284,18 @@ def main():
                 "type":       "session_header",
                 "start_time": datetime.now().isoformat(),
                 "config": {
-                    "duration":         SESSION_DURATION,
-                    "drive_speed":      DRIVE_SPEED,
-                    "corner_speed":     CORNER_SPEED,
-                    "correction_angle": CORRECTION_ANGLE,
-                    "corner_angle":     CORNER_ANGLE,
-                    "corner_duration":  CORNER_DURATION,
+                    "duration":            SESSION_DURATION,
+                    "drive_speed":         DRIVE_SPEED,
+                    "corner_speed":        CORNER_SPEED,
+                    "correction_angle":    CORRECTION_ANGLE,
+                    "corner_angle":        CORNER_ANGLE,
+                    "corner_duration":     CORNER_DURATION,
                     "gs_threshold_left":   GS_THRESHOLD_LEFT,
                     "gs_threshold_center": GS_THRESHOLD_CENTER,
                     "gs_threshold_right":  GS_THRESHOLD_RIGHT,
                     "off_track_threshold": OFF_TRACK_THRESHOLD,
+                    "corner_slow_mm":      CORNER_SLOW_MM,
+                    "corner_trigger_mm":   CORNER_TRIGGER_MM,
                 }
             })
 
@@ -311,11 +324,13 @@ def main():
                     continue
 
                 gs     = sensors.get("grayscale", [0, 0, 0])
+                lidar  = sensors.get("lidar", {})
+                front  = lidar.get("front", 0) or 0
                 reflex = sensors.get("reflex_active", False)
 
                 # ── Reflex override ────────────────────────────────────────────
                 if reflex:
-                    print(f"reflex active gs={gs}")
+                    print(f"reflex active gs={gs} us={sensors.get('ultrasonic_cm',0):.1f}")
                     entry = build_log_entry(
                         sensors, "REFLEX", current_speed, current_angle, "REFLEX"
                     )
@@ -325,25 +340,22 @@ def main():
                     continue
 
                 # ── Boundary detection ─────────────────────────────────────────
-                boundary = detect_boundaries(gs)
-                now      = time.time()
+                boundary         = detect_boundaries(gs)
+                now              = time.time()
                 correction_ready = (now - last_correction) > CORRECTION_COOLDOWN
 
+                # ── OFF TRACK ──────────────────────────────────────────────────
                 if boundary == 'OFF_TRACK':
-                    # All sensors off plywood — stop immediately
                     print(f"OFF TRACK — stopping  gs={gs}")
                     stop()
                     current_speed = 0
                     current_angle = 0
 
-                    entry = build_log_entry(
-                        sensors, "STOP", 0, 0, "OFF_TRACK"
-                    )
+                    entry = build_log_entry(sensors, "STOP", 0, 0, "OFF_TRACK")
                     log_entries.append(entry)
                     write_log(log_f, entry)
 
-                    # Wait for manual intervention — poll until back on plywood
-                    print("  Waiting for car to be placed back on track...")
+                    print("  Waiting to be placed back on track...")
                     while True:
                         time.sleep(0.5)
                         sensors2 = api("/api/sensors")
@@ -353,19 +365,22 @@ def main():
                         r2, c2, l2 = read_grayscale(gs2)
                         valid2 = [v for v in [r2, c2, l2] if v is not None]
                         if valid2 and any(v >= OFF_TRACK_THRESHOLD for v in valid2):
-                            print("  Back on track — resuming in 2 seconds...")
+                            print("  Back on surface — resuming in 2 seconds...")
                             time.sleep(2)
                             set_mode("autonomous")
                             drive(DRIVE_SPEED, 0)
                             current_speed = DRIVE_SPEED
+                            current_angle = 0
+                            in_corner     = False
                             break
 
                     time.sleep(loop_interval)
                     continue
 
-                elif boundary == 'CORNER' and correction_ready:
-                    # Both sensors on tape — corner detected, turn right
-                    print(f"CORNER — turning right  gs={gs}")
+                # ── GRAYSCALE CORNER ───────────────────────────────────────────
+                elif boundary == 'CORNER' and correction_ready and not in_corner:
+                    print(f"GS CORNER — turning right  gs={gs}")
+                    in_corner = True
                     drive(CORNER_SPEED, CORNER_ANGLE)
                     current_speed = CORNER_SPEED
                     current_angle = CORNER_ANGLE
@@ -378,14 +393,48 @@ def main():
                     write_log(log_f, entry)
 
                     time.sleep(CORNER_DURATION)
-
-                    # Resume forward
                     drive(DRIVE_SPEED, 0)
                     current_speed = DRIVE_SPEED
                     current_angle = 0
+                    in_corner     = False
 
+                # ── LIDAR CORNER ───────────────────────────────────────────────
+                elif not in_corner and front > 0 and front < CORNER_TRIGGER_MM and correction_ready:
+                    print(f"LIDAR CORNER (front={front:.0f}mm) — turning right")
+                    in_corner = True
+                    drive(CORNER_SPEED, CORNER_ANGLE)
+                    current_speed = CORNER_SPEED
+                    current_angle = CORNER_ANGLE
+                    last_correction = now
+
+                    entry = build_log_entry(
+                        sensors, "CORNER_TURN", CORNER_SPEED, CORNER_ANGLE, "LIDAR_CORNER"
+                    )
+                    log_entries.append(entry)
+                    write_log(log_f, entry)
+
+                    time.sleep(CORNER_DURATION)
+                    drive(DRIVE_SPEED, 0)
+                    current_speed = DRIVE_SPEED
+                    current_angle = 0
+                    in_corner     = False
+
+                # ── LIDAR SLOW ─────────────────────────────────────────────────
+                elif not in_corner and front > 0 and front < CORNER_SLOW_MM:
+                    slow_speed = max(CORNER_SPEED,
+                                     int(DRIVE_SPEED * (front / CORNER_SLOW_MM)))
+                    drive(slow_speed, current_angle)
+                    current_speed = slow_speed
+                    print(f"slowing for corner (front={front:.0f}mm speed={slow_speed})")
+
+                    entry = build_log_entry(
+                        sensors, "CORNER_SLOW", slow_speed, current_angle, "CORNER_SLOW"
+                    )
+                    log_entries.append(entry)
+                    write_log(log_f, entry)
+
+                # ── RIGHT BOUNDARY ─────────────────────────────────────────────
                 elif boundary == 'RIGHT_OUTER' and correction_ready:
-                    # Right sensor on outer tape — drifting right, steer left
                     print(f"RIGHT boundary — correcting left  gs={gs}")
                     drive(DRIVE_SPEED, -CORRECTION_ANGLE)
                     current_angle   = -CORRECTION_ANGLE
@@ -397,8 +446,8 @@ def main():
                     log_entries.append(entry)
                     write_log(log_f, entry)
 
+                # ── LEFT BOUNDARY ──────────────────────────────────────────────
                 elif boundary == 'LEFT_OUTER' and correction_ready:
-                    # Left sensor on outer tape — drifting left, steer right
                     print(f"LEFT boundary  — correcting right gs={gs}")
                     drive(DRIVE_SPEED, CORRECTION_ANGLE)
                     current_angle   = CORRECTION_ANGLE
@@ -410,9 +459,8 @@ def main():
                     log_entries.append(entry)
                     write_log(log_f, entry)
 
+                # ── CENTER TAPE ────────────────────────────────────────────────
                 elif boundary == 'CENTER_TAPE' and correction_ready:
-                    # Center on tape — approaching inner boundary, steer right
-                    # (bias toward outside of track for clockwise travel)
                     print(f"CENTER tape — steering right  gs={gs}")
                     drive(DRIVE_SPEED, CORRECTION_ANGLE)
                     current_angle   = CORRECTION_ANGLE
@@ -424,13 +472,13 @@ def main():
                     log_entries.append(entry)
                     write_log(log_f, entry)
 
+                # ── FORWARD ────────────────────────────────────────────────────
                 else:
-                    # Clear — drive forward, straighten if needed
                     if current_angle != 0:
                         drive(DRIVE_SPEED, 0)
                         current_angle = 0
                     current_speed = DRIVE_SPEED
-                    print(f"forward  gs={gs}")
+                    print(f"forward  gs={gs}  front={front:.0f}mm")
 
                     entry = build_log_entry(sensors, "FORWARD", DRIVE_SPEED, 0)
                     log_entries.append(entry)
@@ -450,15 +498,16 @@ def main():
             print("\n" + "=" * 60)
             print("  SESSION SUMMARY")
             print("=" * 60)
-            print(f"  Duration:        {SESSION_DURATION}s")
-            print(f"  Total entries:   {summary['total_entries']}")
-            print(f"  Corner turns:    {summary['corner_turns']}")
-            print(f"  Estimated laps:  {summary['estimated_laps']}")
-            print(f"  Left boundary:   {summary['left_boundary_events']}")
-            print(f"  Right boundary:  {summary['right_boundary_events']}")
-            print(f"  Off track:       {summary['off_track_events']}")
-            print(f"  Sensor errors:   {summary['sensor_errors']}")
-            print(f"  Log saved:       {LOG_FILE}")
+            print(f"  Duration:           {SESSION_DURATION}s")
+            print(f"  Total entries:      {summary['total_entries']}")
+            print(f"  GS corner turns:    {summary['corner_turns_grayscale']}")
+            print(f"  LiDAR corner turns: {summary['corner_turns_lidar']}")
+            print(f"  Estimated laps:     {summary['estimated_laps']}")
+            print(f"  Left boundary:      {summary['left_boundary_events']}")
+            print(f"  Right boundary:     {summary['right_boundary_events']}")
+            print(f"  Off track:          {summary['off_track_events']}")
+            print(f"  Sensor errors:      {summary['sensor_errors']}")
+            print(f"  Log saved:          {LOG_FILE}")
             print("=" * 60)
 
     except KeyboardInterrupt:

@@ -33,7 +33,7 @@ LIDAR_BAUDRATE = 460800
 STEERING_TRIM = 0
 
 # ── Safety Thresholds ──────────────────────────────────────────────────────────
-ULTRASONIC_STOP = 15    # cm  — emergency stop distance
+ULTRASONIC_STOP = 8    # cm  — emergency stop distance
 ULTRASONIC_SLOW = 30    # cm  — slow down distance
 CLIFF_STOP      = 100   # ADC — below this = cliff detected
 CLIFF_WARN      = 500   # ADC — below this = near edge
