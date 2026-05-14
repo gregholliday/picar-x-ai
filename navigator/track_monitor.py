@@ -37,7 +37,7 @@ except ImportError:
 AGENT_URL = f"http://{PI_IP}:{AGENT_PORT}"
 
 # ── Session config ─────────────────────────────────────────────────────────────
-SESSION_DURATION = 180      # seconds
+SESSION_DURATION = 45      # seconds
 POLL_RATE_HZ     = 5        # logging rate — lower since Pi handles reflexes now
 
 # ── Log file ───────────────────────────────────────────────────────────────────
