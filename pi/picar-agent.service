@@ -10,7 +10,7 @@ WorkingDirectory=/home/pi/picar-x-ai/pi
 Environment=LOGNAME=pi
 Environment=HOME=/home/pi
 Environment=USER=pi
-ExecStart=/usr/bin/python3 /home/pi/picar-x-ai/pi/picar_agent_v7.py
+ExecStart=/usr/bin/python3 /home/pi/picar-x-ai/pi/picar_agent.py
 Restart=on-failure
 RestartSec=5
 

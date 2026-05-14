@@ -60,6 +60,25 @@ SLOW_SPEED = 15
 SEARCH_FORWARD_STEPS  = 8     # loop iterations to drive forward during search
 SEARCH_ROTATE_STEPS   = 4     # loop iterations to rotate during search
 
+# ── Track mode grayscale thresholds ───────────────────────────────────────────
+# Masking tape on garage floor
+# Tape reads HIGH (~868-1463), floor reads LOW (~316-1145)
+# Values ABOVE threshold = tape detected
+TRACK_GS_THRESHOLD_LEFT        = 950
+TRACK_GS_THRESHOLD_CENTER      = 850   # weak signal — confirmation only
+TRACK_GS_THRESHOLD_RIGHT       = 1000
+TRACK_GS_ZERO_IGNORE           = 50    # below this = sensor dropout, ignore
+TRACK_OFF_SURFACE_THRESHOLD    = 400   # all 3 sensors below this = off surface
+
+# ── Track mode speed/steering settings ────────────────────────────────────────
+TRACK_DRIVE_SPEED              = 20    # normal cruising speed
+TRACK_CORNER_SPEED             = 15    # speed during corner turns
+TRACK_CORRECTION_ANGLE         = 15    # degrees for boundary correction
+TRACK_CORNER_ANGLE             = 30    # degrees for corner turns
+TRACK_CORNER_DURATION          = 0.8   # seconds to hold corner turn
+TRACK_CORRECTION_COOLDOWN      = 0.2   # seconds between corrections
+TRACK_POST_CORNER_LOCKOUT      = 0.4   # seconds to hold straight after corner
+
 # ── LiDAR Orientation ──────────────────────────────────────────────────────────
 # If left/right readings are swapped, set this to True
 LIDAR_SWAP_LR = False
