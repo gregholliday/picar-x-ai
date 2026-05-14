@@ -66,9 +66,9 @@ SEARCH_ROTATE_STEPS   = 4     # loop iterations to rotate during search
 # Values ABOVE threshold = tape detected
 TRACK_GS_THRESHOLD_LEFT        = 950
 TRACK_GS_THRESHOLD_CENTER      = 850   # weak signal — confirmation only
-TRACK_GS_THRESHOLD_RIGHT       = 1000
+TRACK_GS_THRESHOLD_RIGHT       = 950
 TRACK_GS_ZERO_IGNORE           = 50    # below this = sensor dropout, ignore
-TRACK_OFF_SURFACE_THRESHOLD    = 400   # all 3 sensors below this = off surface
+TRACK_OFF_SURFACE_THRESHOLD    = 250   # all 3 sensors below this = off surface
 
 # ── Track mode speed/steering settings ────────────────────────────────────────
 TRACK_DRIVE_SPEED              = 20    # normal cruising speed
