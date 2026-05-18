@@ -27,6 +27,8 @@ try:
         TRACK_CORNER_DURATION,
         TRACK_CORRECTION_COOLDOWN,
         TRACK_POST_CORNER_LOCKOUT,
+        TRACK_CORNER_TRIGGER_COUNT,
+        TRACK_CORNER_TRIGGER_WINDOW,
     )
     print("Config loaded from config.py")
 except ImportError as e:
@@ -53,9 +55,11 @@ except ImportError as e:
     TRACK_CORNER_SPEED             = 15
     TRACK_CORRECTION_ANGLE         = 15
     TRACK_CORNER_ANGLE             = 30
-    TRACK_CORNER_DURATION          = 0.8
+    TRACK_CORNER_DURATION          = 1.2
     TRACK_CORRECTION_COOLDOWN      = 0.2
-    TRACK_POST_CORNER_LOCKOUT      = 0.4
+    TRACK_POST_CORNER_LOCKOUT      = 2.0
+    TRACK_CORNER_TRIGGER_COUNT     = 3
+    TRACK_CORNER_TRIGGER_WINDOW    = 1.0
 
 os.getlogin = lambda: PI_USERNAME
 
@@ -285,12 +289,20 @@ def track_reflex_worker():
     """
     Pi-local track boundary reflex loop.
     Runs at 10Hz when mode == 'track'.
-    Handles all grayscale boundary detection and steering corrections
-    without any network round-trip to the Fedora navigator.
+
+    Corner detection strategy:
+      - No CORNER state from sensor reading
+      - Instead, count LEFT_OUTER events within a rolling time window
+      - When count reaches TRACK_CORNER_TRIGGER_COUNT, execute corner turn
+      - Single/double boundary hits = simple steering correction
+      - This distinguishes drifting (1-2 hits) from corner (rapid repeated hits)
     """
     print("Track reflex worker started.")
-    last_correction = 0
-    in_corner       = False
+    last_correction  = 0
+    in_corner        = False
+
+    # Rolling window for corner detection
+    left_event_times = []   # timestamps of recent LEFT_OUTER events
 
     while True:
         try:
@@ -305,78 +317,102 @@ def track_reflex_worker():
                 # ── OFF SURFACE ────────────────────────────────────────────────
                 if event == 'OFF_SURFACE':
                     px.stop()
-                    state["speed"]              = 0
-                    state["track_reflex_active"] = True
-                    state["track_off_surface"]   = True
+                    state["speed"]               = 0
+                    state["track_reflex_active"]  = True
+                    state["track_off_surface"]    = True
                     print(f"TRACK REFLEX: Off surface — stopped. gs={gs}")
 
-                # ── CORNER ─────────────────────────────────────────────────────
-                elif event == 'CORNER' and correction_ready and not in_corner:
-                    print(f"TRACK REFLEX: Corner — turning right. gs={gs}")
-                    in_corner = True
-                    state["track_reflex_active"] = True
-
-                    px.set_dir_servo_angle(TRACK_CORNER_ANGLE + STEERING_TRIM)
-                    px.forward(TRACK_CORNER_SPEED)
-                    state["speed"] = TRACK_CORNER_SPEED
-                    state["angle"] = TRACK_CORNER_ANGLE
-                    last_correction = now
-
-                    time.sleep(TRACK_CORNER_DURATION)
-
-                    # Straighten and lock out corrections briefly
-                    px.set_dir_servo_angle(STEERING_TRIM)
-                    px.forward(TRACK_DRIVE_SPEED)
-                    state["speed"] = TRACK_DRIVE_SPEED
-                    state["angle"] = 0
-                    last_correction = now + TRACK_POST_CORNER_LOCKOUT
-                    in_corner = False
-                    state["track_reflex_active"] = False
-
-                # ── RIGHT OUTER BOUNDARY ───────────────────────────────────────
-                elif event == 'RIGHT_OUTER' and correction_ready:
-                    print(f"TRACK REFLEX: Right boundary — correcting left. gs={gs}")
-                    state["track_reflex_active"] = True
-
-                    px.set_dir_servo_angle(-TRACK_CORRECTION_ANGLE + STEERING_TRIM)
-                    state["angle"] = -TRACK_CORRECTION_ANGLE
-                    last_correction = now
-                    state["track_reflex_active"] = False
+                elif in_corner:
+                    # Already executing a corner turn — don't interrupt
+                    pass
 
                 # ── LEFT OUTER BOUNDARY ────────────────────────────────────────
                 elif event == 'LEFT_OUTER' and correction_ready:
-                    print(f"TRACK REFLEX: Left boundary — correcting right. gs={gs}")
-                    state["track_reflex_active"] = True
 
-                    px.set_dir_servo_angle(TRACK_CORRECTION_ANGLE + STEERING_TRIM)
-                    state["angle"] = TRACK_CORRECTION_ANGLE
-                    last_correction = now
+                    # Add timestamp to rolling window
+                    left_event_times.append(now)
+
+                    # Trim events outside the window
+                    left_event_times = [
+                        t for t in left_event_times
+                        if now - t <= TRACK_CORNER_TRIGGER_WINDOW
+                    ]
+
+                    if len(left_event_times) >= TRACK_CORNER_TRIGGER_COUNT:
+                        # Corner detected — repeated outer boundary contact
+                        print(f"TRACK REFLEX: CORNER detected ({len(left_event_times)} hits) — turning right. gs={gs}")
+                        in_corner = True
+                        state["track_reflex_active"] = True
+                        state["track_event"]         = "CORNER"
+                        left_event_times = []   # reset counter
+
+                        px.set_dir_servo_angle(TRACK_CORNER_ANGLE + STEERING_TRIM)
+                        px.forward(TRACK_CORNER_SPEED)
+                        state["speed"] = TRACK_CORNER_SPEED
+                        state["angle"] = TRACK_CORNER_ANGLE
+                        last_correction = now
+
+                        time.sleep(TRACK_CORNER_DURATION)
+
+                        # Straighten and lock out corrections
+                        px.set_dir_servo_angle(STEERING_TRIM)
+                        px.forward(TRACK_DRIVE_SPEED)
+                        state["speed"]               = TRACK_DRIVE_SPEED
+                        state["angle"]               = 0
+                        last_correction              = now + TRACK_POST_CORNER_LOCKOUT
+                        in_corner                    = False
+                        state["track_reflex_active"] = False
+
+                    else:
+                        # Simple drift correction — steer right
+                        print(f"TRACK REFLEX: Left boundary ({len(left_event_times)} hits) — correcting right. gs={gs}")
+                        state["track_reflex_active"] = True
+                        px.set_dir_servo_angle(TRACK_CORRECTION_ANGLE + STEERING_TRIM)
+                        state["angle"]               = TRACK_CORRECTION_ANGLE
+                        last_correction              = now
+                        state["track_reflex_active"] = False
+
+                # ── RIGHT OUTER BOUNDARY ───────────────────────────────────────
+                elif event == 'RIGHT_OUTER' and correction_ready:
+                    # Inner boundary — steer left
+                    # Also reset left event counter since we overcorrected
+                    left_event_times = []
+                    print(f"TRACK REFLEX: Right boundary — correcting left. gs={gs}")
+                    state["track_reflex_active"] = True
+                    px.set_dir_servo_angle(-TRACK_CORRECTION_ANGLE + STEERING_TRIM)
+                    state["angle"]               = -TRACK_CORRECTION_ANGLE
+                    last_correction              = now
                     state["track_reflex_active"] = False
 
                 # ── CENTER TAPE ────────────────────────────────────────────────
                 elif event == 'CENTER_TAPE' and correction_ready:
                     print(f"TRACK REFLEX: Center tape — steering right. gs={gs}")
                     state["track_reflex_active"] = True
-
                     px.set_dir_servo_angle(TRACK_CORRECTION_ANGLE + STEERING_TRIM)
-                    state["angle"] = TRACK_CORRECTION_ANGLE
-                    last_correction = now
+                    state["angle"]               = TRACK_CORRECTION_ANGLE
+                    last_correction              = now
                     state["track_reflex_active"] = False
 
                 # ── CLEAR ──────────────────────────────────────────────────────
                 else:
                     if state["track_reflex_active"] and event == 'CLEAR':
-                        # Straighten up when clear
                         px.set_dir_servo_angle(STEERING_TRIM)
-                        state["angle"] = 0
+                        state["angle"]               = 0
                         state["track_reflex_active"] = False
 
+                    # Trim stale left events on clear readings
+                    left_event_times = [
+                        t for t in left_event_times
+                        if now - t <= TRACK_CORNER_TRIGGER_WINDOW
+                    ]
+
             else:
-                # Not in track mode — reset track state
+                # Not in track mode — reset all state
                 state["track_reflex_active"] = False
                 state["track_off_surface"]   = False
                 state["track_event"]         = "CLEAR"
-                in_corner = False
+                in_corner        = False
+                left_event_times = []
 
         except Exception as e:
             print(f"Track reflex error: {e}")
