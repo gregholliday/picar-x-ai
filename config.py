@@ -75,9 +75,13 @@ TRACK_DRIVE_SPEED              = 20    # normal cruising speed
 TRACK_CORNER_SPEED             = 15    # speed during corner turns
 TRACK_CORRECTION_ANGLE         = 15    # degrees for boundary correction
 TRACK_CORNER_ANGLE             = 30    # degrees for corner turns
-TRACK_CORNER_DURATION          = 0.8   # seconds to hold corner turn
+TRACK_CORNER_DURATION          = 1.0   # seconds to hold corner turn
 TRACK_CORRECTION_COOLDOWN      = 0.2   # seconds between corrections
 TRACK_POST_CORNER_LOCKOUT      = 0.4   # seconds to hold straight after corner
+TRACK_CORNER_TRIGGER_COUNT  = 3
+TRACK_CORNER_TRIGGER_WINDOW = 1.0
+TRACK_CORNER_DURATION       = 1.2
+TRACK_POST_CORNER_LOCKOUT   = 2.0
 
 # ── LiDAR Orientation ──────────────────────────────────────────────────────────
 # If left/right readings are swapped, set this to True
