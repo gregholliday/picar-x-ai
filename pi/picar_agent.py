@@ -239,9 +239,9 @@ def gs_detect_boundary(gs):
       'CENTER_TAPE' — center sensor on tape only
       'CLEAR'       — no tape detected
     """
-    right  = gs_valid(gs[2]) if len(gs) > 0 else None
+    right  = gs_valid(gs[0]) if len(gs) > 0 else None
     center = gs_valid(gs[1]) if len(gs) > 1 else None
-    left   = gs_valid(gs[0]) if len(gs) > 2 else None
+    left   = gs_valid(gs[2]) if len(gs) > 2 else None
 
     # Off-surface: all 3 valid sensors reading very low
     valid = [v for v in [right, center, left] if v is not None and v > TRACK_GS_ZERO_IGNORE]
@@ -252,14 +252,31 @@ def gs_detect_boundary(gs):
     center_tape = gs_on_tape(center, TRACK_GS_THRESHOLD_CENTER)
     left_tape   = gs_on_tape(left,   TRACK_GS_THRESHOLD_LEFT)
 
+    # Require confirmation from at least one other sensor to avoid
+    # single-sensor false triggers from floor anomalies/reflective spots
+    # CORNER: both outer sensors on tape
     if right_tape and left_tape:
         return 'CORNER'
-    if right_tape:
+
+    # RIGHT_OUTER: right sensor confirmed by center
+    if right_tape and center_tape:
         return 'RIGHT_OUTER'
-    if left_tape:
+
+    # LEFT_OUTER: left sensor confirmed by center
+    if left_tape and center_tape:
         return 'LEFT_OUTER'
+
+    # Single sensor detections — softer signals, use with caution
+    # Only trigger if reading is significantly above threshold
+    if right_tape and right > TRACK_GS_THRESHOLD_RIGHT * 1.2:
+        return 'RIGHT_OUTER'
+
+    if left_tape and left > TRACK_GS_THRESHOLD_LEFT * 1.2:
+        return 'LEFT_OUTER'
+
     if center_tape:
         return 'CENTER_TAPE'
+
     return 'CLEAR'
 
 
