@@ -243,9 +243,9 @@ def gs_detect_boundary(gs):
       'CENTER_TAPE' — center sensor on tape only
       'CLEAR'       — no tape detected
     """
-    right  = gs_valid(gs[2]) if len(gs) > 0 else None
+    right  = gs_valid(gs[0]) if len(gs) > 0 else None
     center = gs_valid(gs[1]) if len(gs) > 1 else None
-    left   = gs_valid(gs[0]) if len(gs) > 2 else None
+    left   = gs_valid(gs[2]) if len(gs) > 2 else None
 
     # Off-surface: all 3 valid sensors reading very low
     valid = [v for v in [right, center, left] if v is not None and v > TRACK_GS_ZERO_IGNORE]
