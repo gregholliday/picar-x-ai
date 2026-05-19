@@ -274,7 +274,15 @@ Values above threshold = tape detected.
 TAPE STOP EVENTS ({rich['tape_stop_count']} total):
 Times elapsed: {rich['tape_stop_times']}
 Gaps between stops (s): {rich['tape_stop_gaps']}
-Event details with surrounding context:
+
+PRE-CLASSIFIED TAPE STOP VERDICTS (Python analysis, use these directly):
+{json.dumps(rich.get('tape_verdicts', []), indent=2)}
+
+Classification rule: grayscale above 900 = tape confirmed (real stop).
+Grayscale below 900 = floor reflection (false trigger, car self-recovers).
+Masking tape reads 950-1450. Garage floor reads 300-800.
+
+Event context:
 {json.dumps(rich['tape_events'], indent=2)}
 
 WALL TURN EVENTS (first 5):
@@ -299,9 +307,9 @@ What happened during this session in 2-3 sentences.
 Specific behaviors with evidence. Reference actual values.
 
 ## Issues Found
-Real problems only. For each tape stop, was it a real barrier or likely a false trigger?
-Base this on the grayscale values at the time — if gs values are floor-level (~300-800), it was likely a false trigger.
-If gs values are tape-level (~950+), it was a real barrier detection.
+Use the PRE-CLASSIFIED TAPE STOP VERDICTS above — do not re-analyze grayscale values yourself.
+Simply report how many were real vs false triggers and what that means for the session.
+Only flag genuine problems — false triggers that self-recover are NOT problems, they are expected behavior.
 
 ## Root Cause Analysis
 For each real issue, the likely cause based on the data.
@@ -318,18 +326,37 @@ One paragraph based on actual ranges seen."""
 def generate_narrative(rich, model):
     """Generate Medium narrative with rich context."""
 
-    # Count real vs false tape stops based on grayscale values
+    # Pre-classify tape stops as real vs false based on grayscale values
+    # Real tape: any sensor above 900 (tape reads 950-1450)
+    # False trigger: all sensors below 900 (floor reads 300-800)
     real_stops  = 0
     false_stops = 0
+    tape_verdicts = []
     for event in rich.get("tape_events", []):
         for entry in event.get("context", []):
             if entry.get("action") == "TAPE_STOP":
-                gs_max = max(entry.get("gs_l", 0), entry.get("gs_c", 0), entry.get("gs_r", 0))
+                gs_l   = entry.get("gs_l", 0)
+                gs_c   = entry.get("gs_c", 0)
+                gs_r   = entry.get("gs_r", 0)
+                gs_max = max(gs_l, gs_c, gs_r)
+                t      = entry.get("t", 0)
                 if gs_max > 900:
                     real_stops += 1
+                    verdict = "REAL"
                 else:
                     false_stops += 1
+                    verdict = "FALSE_TRIGGER"
+                tape_verdicts.append({
+                    "t":       t,
+                    "verdict": verdict,
+                    "gs_l":    gs_l,
+                    "gs_c":    gs_c,
+                    "gs_r":    gs_r,
+                    "gs_max":  gs_max,
+                    "reason":  "tape detected (gs_max>900)" if verdict == "REAL" else f"floor reflection (gs_max={gs_max}, threshold=900)",
+                })
                 break
+    rich["tape_verdicts"] = tape_verdicts
 
     prompt = f"""{SYSTEM_CONTEXT}
 
