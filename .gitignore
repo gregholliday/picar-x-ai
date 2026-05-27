@@ -39,3 +39,21 @@ picar-spectator/Dockerfile
 picar-spectator/index.html
 
 experiments/
+logs/calibration_garage_A_20260519_090056.json
+logs/calibration_garage_B_20260519_090324.json
+logs/calibration_garage_C_20260519_090442.json
+logs/mission_garage_B_20260519_102922.json
+logs/mission_garage_B_20260519_103359.json
+logs/mission_garage_B_20260520_091833.json
+logs/mission_garage_B_20260520_105538.json
+logs/roam_garage_20260519_091638.json
+logs/roam_garage_20260519_092106.json
+logs/roam_garage_20260519_092237.json
+reports/diagnostic_mission_garage_B_20260519_103359.md
+reports/diagnostic_roam_garage_20260519_092237.md
+reports/Modelfile
+reports/Modelfile.qwen3
+reports/narrative_mission_garage_B_20260519_103359.md
+reports/narrative_roam_garage_20260519_092237.md
+reports/deepseek/diagnostic_roam_garage_20260519_092237.md
+reports/deepseek/narrative_roam_garage_20260519_092237.md
