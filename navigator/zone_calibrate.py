@@ -1,21 +1,19 @@
 #!/usr/bin/env python3
 """
-zone_calibrate.py — PiCar-X Zone Calibration Tool
+zone_calibrate.py — PiCar-X Zone Calibration Tool v2
 
-Run on Fedora to define named zones in the current environment.
-Places the car at a zone, takes averaged LiDAR readings, stores to zones.json.
+Calibrates named zones using LiDAR + compass heading.
+Stores world coordinates (N/S/E/W wall distances) so zone matching
+is heading-independent during navigation.
 
 Usage:
-  python3 zone_calibrate.py --zone A
-  python3 zone_calibrate.py --zone B
+  python3 zone_calibrate.py --zone A --description "Back left corner"
+  python3 zone_calibrate.py --zone B --description "Front left near door"
   python3 zone_calibrate.py --list
   python3 zone_calibrate.py --delete A
 
-Zones are stored in:
-  /mnt/ai-lab/picar-x-ai/data/zones_<environment>.json
-
-Log (KB-ingestible) stored in:
-  /mnt/ai-lab/picar-x-ai/logs/calibration_<environment>_<timestamp>.json
+Requires compass to be wired and calibrated before use.
+Falls back to car-relative coordinates if compass unavailable.
 """
 
 import requests
@@ -23,11 +21,11 @@ import time
 import json
 import sys
 import os
+import math
 import argparse
 from datetime import datetime
-from statistics import mean, stdev
+from statistics import mean
 
-# ── Load config ────────────────────────────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
     from config import PI_IP, AGENT_PORT
@@ -35,22 +33,20 @@ except ImportError:
     PI_IP      = "YOUR_PI_IP"
     AGENT_PORT = 8000
 
-AGENT_URL = f"http://{PI_IP}:{AGENT_PORT}"
-
-# ── Config ─────────────────────────────────────────────────────────────────────
-ENVIRONMENT   = os.environ.get("PICAR_ENV", "garage")
-DATA_DIR      = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-LOG_DIR       = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
-ZONES_FILE    = os.path.join(DATA_DIR, f"zones_{ENVIRONMENT}.json")
-SAMPLES       = 20          # readings to average
-SAMPLE_HZ     = 5           # readings per second
-TOLERANCE_MM  = 450         # zone match tolerance in mm
+AGENT_URL    = f"http://{PI_IP}:{AGENT_PORT}"
+ENVIRONMENT  = os.environ.get("PICAR_ENV", "garage")
+DATA_DIR     = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+LOG_DIR      = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+ZONES_FILE   = os.path.join(DATA_DIR, f"zones_{ENVIRONMENT}.json")
+SAMPLES      = 20
+SAMPLE_HZ    = 5
+TOLERANCE_MM = 300
 
 
 def api(endpoint, method="get", params=None):
     try:
         url = f"{AGENT_URL}{endpoint}"
-        r = requests.get(url, timeout=2.0) if method == "get" else requests.post(url, params=params, timeout=2.0)
+        r   = requests.get(url, timeout=2.0) if method == "get" else requests.post(url, params=params, timeout=2.0)
         r.raise_for_status()
         return r.json()
     except Exception as e:
@@ -72,10 +68,60 @@ def save_zones(data):
         json.dump(data, f, indent=2)
 
 
+def lidar_to_world(lidar, heading_deg):
+    """
+    Convert car-relative LiDAR readings to world coordinates.
+    Uses compass heading to determine which physical wall each axis sees.
+
+    heading_deg: compass heading of car's FRONT (0=N, 90=E, 180=S, 270=W)
+
+    Returns dict: {"N": mm, "S": mm, "E": mm, "W": mm}
+    """
+    # Snap heading to nearest 45 degrees for robust mapping
+    # Use 90-degree snapping for clean axis alignment
+    h = round(heading_deg / 90) * 90 % 360
+
+    front = lidar.get("front_mm", 0) or 0
+    back  = lidar.get("back_mm",  0) or 0
+    left  = lidar.get("left_mm",  0) or 0
+    right = lidar.get("right_mm", 0) or 0
+
+    if h == 0:    # facing North: F=N, R=E, B=S, L=W
+        return {"N": front, "E": right, "S": back,  "W": left}
+    elif h == 90:  # facing East:  F=E, R=S, B=W, L=N
+        return {"N": left,  "E": front, "S": right, "W": back}
+    elif h == 180: # facing South: F=S, R=W, B=N, L=E
+        return {"N": back,  "E": left,  "S": front, "W": right}
+    else:          # facing West:  F=W, R=N, B=E, L=S
+        return {"N": right, "E": back,  "S": left,  "W": front}
+
+
+def world_to_car(world, heading_deg):
+    """
+    Convert world coordinates back to car-relative for drive commands.
+    Inverse of lidar_to_world.
+    """
+    h = round(heading_deg / 90) * 90 % 360
+    N = world.get("N", 0)
+    S = world.get("S", 0)
+    E = world.get("E", 0)
+    W = world.get("W", 0)
+
+    if h == 0:    # facing North
+        return {"front_mm": N, "right_mm": E, "back_mm": S, "left_mm": W}
+    elif h == 90:  # facing East
+        return {"front_mm": E, "right_mm": S, "back_mm": W, "left_mm": N}
+    elif h == 180: # facing South
+        return {"front_mm": S, "right_mm": W, "back_mm": N, "left_mm": E}
+    else:          # facing West
+        return {"front_mm": W, "right_mm": N, "back_mm": E, "left_mm": S}
+
+
 def take_readings():
-    """Take SAMPLES LiDAR readings and return averaged values."""
+    """Take averaged LiDAR + compass readings."""
     print(f"  Taking {SAMPLES} readings at {SAMPLE_HZ}Hz...")
-    readings = {"front": [], "back": [], "left": [], "right": [], "grayscale": []}
+    lidar_readings   = {"front": [], "back": [], "left": [], "right": []}
+    heading_readings = []
 
     for i in range(SAMPLES):
         sensors = api("/api/sensors")
@@ -83,85 +129,86 @@ def take_readings():
             lidar = sensors.get("lidar", {})
             for k in ["front", "back", "left", "right"]:
                 v = lidar.get(k, 0)
-                if v > 0:
-                    readings[k].append(v)
-            gs = sensors.get("grayscale", [0,0,0])
-            readings["grayscale"].append(gs)
+                if v and v > 0:
+                    lidar_readings[k].append(v)
+
+            heading = sensors.get("compass_heading")
+            if heading is not None:
+                heading_readings.append(heading)
 
         print(f"    [{i+1:2d}/{SAMPLES}]", end="\r")
         time.sleep(1 / SAMPLE_HZ)
 
     print()
-    averaged = {}
+
+    # Average LiDAR
+    avg_lidar = {}
     for k in ["front", "back", "left", "right"]:
-        vals = readings[k]
-        if vals:
-            averaged[k] = {
-                "mean_mm":   round(mean(vals), 1),
-                "stdev_mm":  round(stdev(vals), 1) if len(vals) > 1 else 0,
-                "samples":   len(vals),
-            }
-        else:
-            averaged[k] = {"mean_mm": 0, "stdev_mm": 0, "samples": 0}
+        vals = lidar_readings[k]
+        avg_lidar[f"{k}_mm"] = round(mean(vals), 1) if vals else 0
 
-    # Average grayscale
-    gs_readings = readings["grayscale"]
-    if gs_readings:
-        averaged["grayscale"] = {
-            "left":   round(mean(r[0] for r in gs_readings if len(r) > 0), 1),
-            "center": round(mean(r[1] for r in gs_readings if len(r) > 1), 1),
-            "right":  round(mean(r[2] for r in gs_readings if len(r) > 2), 1),
-        }
+    # Average heading (circular mean)
+    avg_heading = None
+    if heading_readings:
+        sin_sum = sum(math.sin(math.radians(h)) for h in heading_readings)
+        cos_sum = sum(math.cos(math.radians(h)) for h in heading_readings)
+        avg_heading = round(math.degrees(math.atan2(sin_sum, cos_sum)) % 360, 1)
 
-    return averaged
+    return avg_lidar, avg_heading
 
 
 def calibrate_zone(zone_name, description=""):
-    """Calibrate a zone at the car's current position."""
     print(f"\nCalibrating Zone {zone_name.upper()} — environment: {ENVIRONMENT}")
-    print("Place car at the zone position and hold still.")
+    print("Place car at the zone position facing the desired heading.")
     print("Starting in 3 seconds...\n")
     time.sleep(3)
 
-    # Verify agent
     status = api("/api/status")
     if not status:
         print("ERROR: Cannot reach Pi agent.")
         return False
 
-    battery = status.get("battery_v", 0)
-    print(f"Battery: {battery}V ({status.get('battery_pct', 0)}%)")
+    compass_ok = status.get("compass_ok", False)
+    if not compass_ok:
+        print("WARNING: Compass not available or not calibrated.")
+        print("Zone will be stored with car-relative coordinates only.")
+        print("Re-calibrate after compass is installed for best results.\n")
 
-    readings = take_readings()
+    battery = status.get("battery_v", 0)
+    print(f"Battery: {battery}V  Compass: {'OK' if compass_ok else 'NOT AVAILABLE'}\n")
+
+    avg_lidar, avg_heading = take_readings()
+
+    # Convert to world coordinates if compass available
+    world_distances = None
+    if avg_heading is not None:
+        world_distances = lidar_to_world(avg_lidar, avg_heading)
+        print(f"  Heading:  {avg_heading}°")
+        print(f"  World:    N={world_distances['N']:.0f}mm  S={world_distances['S']:.0f}mm  "
+              f"E={world_distances['E']:.0f}mm  W={world_distances['W']:.0f}mm")
+    else:
+        print(f"  Heading:  unknown (no compass)")
+
+    print(f"  LiDAR:    front={avg_lidar['front_mm']:.0f}mm  back={avg_lidar['back_mm']:.0f}mm  "
+          f"left={avg_lidar['left_mm']:.0f}mm  right={avg_lidar['right_mm']:.0f}mm")
 
     zone_data = {
-        "name":        zone_name.upper(),
-        "description": description or f"Zone {zone_name.upper()}",
-        "environment": ENVIRONMENT,
-        "calibrated":  datetime.now().isoformat(),
-        "tolerance_mm": TOLERANCE_MM,
-        "lidar": {
-            "front_mm":  readings["front"]["mean_mm"],
-            "back_mm":   readings["back"]["mean_mm"],
-            "left_mm":   readings["left"]["mean_mm"],
-            "right_mm":  readings["right"]["mean_mm"],
-        },
-        "lidar_stdev": {
-            "front_mm":  readings["front"]["stdev_mm"],
-            "back_mm":   readings["back"]["stdev_mm"],
-            "left_mm":   readings["left"]["stdev_mm"],
-            "right_mm":  readings["right"]["stdev_mm"],
-        },
-        "grayscale":   readings.get("grayscale", {}),
-        "battery_v":   battery,
+        "name":             zone_name.upper(),
+        "description":      description or f"Zone {zone_name.upper()}",
+        "environment":      ENVIRONMENT,
+        "calibrated":       datetime.now().isoformat(),
+        "tolerance_mm":     TOLERANCE_MM,
+        "heading_deg":      avg_heading,
+        "lidar":            avg_lidar,
+        "world_distances":  world_distances,
+        "compass_used":     compass_ok,
     }
 
-    # Save zone
     data = load_zones()
     data["zones"][zone_name.upper()] = zone_data
     save_zones(data)
 
-    # Write KB-ingestible log
+    # KB log
     os.makedirs(LOG_DIR, exist_ok=True)
     log_path = os.path.join(
         LOG_DIR,
@@ -172,44 +219,45 @@ def calibrate_zone(zone_name, description=""):
         "environment": ENVIRONMENT,
         "zone":        zone_name.upper(),
         "timestamp":   datetime.now().isoformat(),
-        "summary":     f"Zone {zone_name.upper()} calibrated in {ENVIRONMENT} environment. "
-                       f"LiDAR: front={readings['front']['mean_mm']:.0f}mm, "
-                       f"back={readings['back']['mean_mm']:.0f}mm, "
-                       f"left={readings['left']['mean_mm']:.0f}mm, "
-                       f"right={readings['right']['mean_mm']:.0f}mm. "
-                       f"Tolerance: ±{TOLERANCE_MM}mm.",
-        "data":        zone_data,
+        "summary":     f"Zone {zone_name.upper()} calibrated in {ENVIRONMENT}. "
+                       f"Heading: {avg_heading}°. "
+                       f"World: N={world_distances['N'] if world_distances else '?'}mm "
+                       f"S={world_distances['S'] if world_distances else '?'}mm "
+                       f"E={world_distances['E'] if world_distances else '?'}mm "
+                       f"W={world_distances['W'] if world_distances else '?'}mm. "
+                       f"Compass used: {compass_ok}.",
+        "data": zone_data,
     }
     with open(log_path, "w") as f:
         json.dump(log, f, indent=2)
 
-    print(f"\nZone {zone_name.upper()} calibrated:")
-    print(f"  Front:  {readings['front']['mean_mm']:.0f}mm  (±{readings['front']['stdev_mm']:.0f}mm)")
-    print(f"  Back:   {readings['back']['mean_mm']:.0f}mm  (±{readings['back']['stdev_mm']:.0f}mm)")
-    print(f"  Left:   {readings['left']['mean_mm']:.0f}mm  (±{readings['left']['stdev_mm']:.0f}mm)")
-    print(f"  Right:  {readings['right']['mean_mm']:.0f}mm  (±{readings['right']['stdev_mm']:.0f}mm)")
-    print(f"\nSaved to: {ZONES_FILE}")
-    print(f"Log:      {log_path}")
+    print(f"\nZone {zone_name.upper()} saved to: {ZONES_FILE}")
+    print(f"Log: {log_path}")
     return True
 
 
 def list_zones():
-    data = load_zones()
+    data  = load_zones()
     zones = data.get("zones", {})
     if not zones:
         print(f"No zones defined for environment: {ENVIRONMENT}")
         return
     print(f"\nZones for environment: {ENVIRONMENT}")
-    print("=" * 60)
+    print("=" * 65)
     for name, zone in zones.items():
+        world = zone.get("world_distances", {})
         lidar = zone.get("lidar", {})
-        print(f"\n  Zone {name} — {zone.get('description', '')}")
+        heading = zone.get("heading_deg", "unknown")
+        compass = "✓" if zone.get("compass_used") else "✗"
+        print(f"\n  Zone {name} — {zone.get('description', '')}  [compass: {compass}]")
         print(f"    Calibrated: {zone.get('calibrated', 'unknown')}")
-        print(f"    Front:  {lidar.get('front_mm', 0):.0f}mm")
-        print(f"    Back:   {lidar.get('back_mm', 0):.0f}mm")
-        print(f"    Left:   {lidar.get('left_mm', 0):.0f}mm")
-        print(f"    Right:  {lidar.get('right_mm', 0):.0f}mm")
-        print(f"    Tolerance: ±{zone.get('tolerance_mm', TOLERANCE_MM)}mm")
+        print(f"    Heading:    {heading}°")
+        if world:
+            print(f"    World:      N={world.get('N',0):.0f}  S={world.get('S',0):.0f}  "
+                  f"E={world.get('E',0):.0f}  W={world.get('W',0):.0f}  (mm)")
+        print(f"    LiDAR:      F={lidar.get('front_mm',0):.0f}  B={lidar.get('back_mm',0):.0f}  "
+              f"L={lidar.get('left_mm',0):.0f}  R={lidar.get('right_mm',0):.0f}  (mm)")
+        print(f"    Tolerance:  ±{zone.get('tolerance_mm', TOLERANCE_MM)}mm")
 
 
 def delete_zone(zone_name):
@@ -223,12 +271,12 @@ def delete_zone(zone_name):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="PiCar-X Zone Calibration Tool")
-    parser.add_argument("--zone",        help="Zone name to calibrate (A, B, C, etc.)")
+    parser = argparse.ArgumentParser(description="PiCar-X Zone Calibration Tool v2")
+    parser.add_argument("--zone",        help="Zone name to calibrate (A, B, C)")
     parser.add_argument("--description", help="Zone description", default="")
-    parser.add_argument("--list",        action="store_true", help="List all zones")
+    parser.add_argument("--list",        action="store_true")
     parser.add_argument("--delete",      help="Delete a zone")
-    parser.add_argument("--env",         help="Environment name (default: garage)", default=None)
+    parser.add_argument("--env",         help="Environment name", default=None)
     args = parser.parse_args()
 
     global ENVIRONMENT, ZONES_FILE

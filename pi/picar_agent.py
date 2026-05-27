@@ -76,6 +76,18 @@ import threading
 import signal
 import time
 
+# ── Compass ───────────────────────────────────────────────────────────────────
+try:
+    from compass_reader import CompassReader
+    compass = CompassReader()
+    COMPASS_AVAILABLE = True
+    print("Compass initialized.")
+except Exception as e:
+    compass = None
+    COMPASS_AVAILABLE = False
+    print(f"Compass not available: {e}")
+
+
 # ── Reset MCU ─────────────────────────────────────────────────────────────────
 try:
     from robot_hat import reset_mcu
@@ -142,6 +154,8 @@ state = {
     "track_off_surface":   False,      # car has left the track surface
     "battery_v":           0.0,
     "battery_pct":         0,
+    "compass_heading":     None,
+    "compass_ok":          False,
     "task":                "",
     "task_status":         "IDLE",
     "task_found":          False,
@@ -216,6 +230,15 @@ def sensor_worker():
             except Exception:
                 pass
 
+        # Read compass heading
+        if compass is not None:
+            try:
+                heading = compass.read_heading()
+                state["compass_heading"] = heading
+                state["compass_ok"]      = heading is not None
+            except Exception:
+                state["compass_ok"] = False
+
         time.sleep(0.1)
 
 threading.Thread(target=sensor_worker, daemon=True).start()
@@ -233,50 +256,49 @@ def gs_on_tape(val, threshold):
 def gs_detect_boundary(gs):
     """
     Analyze grayscale and return boundary event string.
-    gs = [right, center, left] per PiCar-X library ordering.
+
+    Physical sensor mapping (confirmed by calibration):
+      gs[0] = LEFT  sensor (outer boundary for clockwise travel)
+      gs[1] = CENTER sensor
+      gs[2] = RIGHT sensor (inner boundary for clockwise travel)
 
     Returns:
       'OFF_SURFACE' — all 3 valid sensors below OFF_SURFACE_THRESHOLD
-      'CORNER'      — both left and right sensors on tape
-      'RIGHT_OUTER' — right sensor on tape only
-      'LEFT_OUTER'  — left sensor on tape only
+      'LEFT_OUTER'  — left sensor on outer tape → steer right
+      'RIGHT_OUTER' — right sensor on inner tape → steer left
       'CENTER_TAPE' — center sensor on tape only
       'CLEAR'       — no tape detected
+
+    Note: CORNER detection removed — corners detected by reflex worker
+    counting repeated LEFT_OUTER events within a time window.
     """
-    right  = gs_valid(gs[0]) if len(gs) > 0 else None
+    left   = gs_valid(gs[0]) if len(gs) > 0 else None
     center = gs_valid(gs[1]) if len(gs) > 1 else None
-    left   = gs_valid(gs[2]) if len(gs) > 2 else None
+    right  = gs_valid(gs[2]) if len(gs) > 2 else None
 
     # Off-surface: all 3 valid sensors reading very low
-    valid = [v for v in [right, center, left] if v is not None and v > TRACK_GS_ZERO_IGNORE]
+    valid = [v for v in [left, center, right] if v is not None and v > TRACK_GS_ZERO_IGNORE]
     if len(valid) >= 3 and all(v < TRACK_OFF_SURFACE_THRESHOLD for v in valid):
         return 'OFF_SURFACE'
 
-    right_tape  = gs_on_tape(right,  TRACK_GS_THRESHOLD_RIGHT)
-    center_tape = gs_on_tape(center, TRACK_GS_THRESHOLD_CENTER)
     left_tape   = gs_on_tape(left,   TRACK_GS_THRESHOLD_LEFT)
+    center_tape = gs_on_tape(center, TRACK_GS_THRESHOLD_CENTER)
+    right_tape  = gs_on_tape(right,  TRACK_GS_THRESHOLD_RIGHT)
 
-    # Require confirmation from at least one other sensor to avoid
-    # single-sensor false triggers from floor anomalies/reflective spots
-    # CORNER: both outer sensors on tape
-    if right_tape and left_tape:
-        return 'CORNER'
-
-    # RIGHT_OUTER: right sensor confirmed by center
-    if right_tape and center_tape:
-        return 'RIGHT_OUTER'
-
-    # LEFT_OUTER: left sensor confirmed by center
+    # LEFT_OUTER: left sensor on outer tape, confirmed by center
     if left_tape and center_tape:
         return 'LEFT_OUTER'
 
-    # Single sensor detections — softer signals, use with caution
-    # Only trigger if reading is significantly above threshold
-    if right_tape and right > TRACK_GS_THRESHOLD_RIGHT * 1.2:
+    # RIGHT_OUTER: right sensor on inner tape, confirmed by center
+    if right_tape and center_tape:
         return 'RIGHT_OUTER'
 
+    # Single sensor — only trigger if well above threshold
     if left_tape and left > TRACK_GS_THRESHOLD_LEFT * 1.2:
         return 'LEFT_OUTER'
+
+    if right_tape and right > TRACK_GS_THRESHOLD_RIGHT * 1.2:
+        return 'RIGHT_OUTER'
 
     if center_tape:
         return 'CENTER_TAPE'
@@ -594,6 +616,8 @@ def get_status():
         "track_off_surface":   state["track_off_surface"],
         "battery_v":           state["battery_v"],
         "battery_pct":         state["battery_pct"],
+        "compass_heading":     state["compass_heading"],
+        "compass_ok":          state["compass_ok"],
         "task":                state["task"],
         "task_status":         state["task_status"],
         "task_found":          state["task_found"],
@@ -625,6 +649,8 @@ def get_sensors():
         "track_reflex_active": state["track_reflex_active"],
         "track_event":         state["track_event"],
         "track_off_surface":   state["track_off_surface"],
+        "compass_heading":     state["compass_heading"],
+        "compass_ok":          state["compass_ok"],
         "lidar": {
             "points": len(scan),
             "front":  closest(front),
