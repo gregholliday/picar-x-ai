@@ -1,175 +1,175 @@
 #!/usr/bin/env python3
 """
-compass_calibrate.py — QMC5883L Compass Calibration Tool
+compass_reader.py — QMC5883P Compass Reader Module
 
-Run this on the Pi BEFORE using the compass for navigation.
-Slowly rotate the car 360 degrees (at least 2 full rotations) while
-this script runs. It captures the min/max magnetic field values on
-each axis and saves calibration offsets to compass_cal.json.
-
-These offsets correct for:
-  - Hard iron distortion (permanent magnets, motors, steel in chassis)
-  - Sensor zero offset
+QMC5883P register map (different from QMC5883L):
+  0x00 = Chip ID (default 0x80)
+  0x01-0x02 = X axis LSB/MSB
+  0x03-0x04 = Y axis LSB/MSB
+  0x05-0x06 = Z axis LSB/MSB
+  0x09 = Status register
+  0x0A = Control register 1
+  Default I2C address: 0x2C
 
 Usage:
-  python3 compass_calibrate.py
-
-Saves calibration to:
-  /home/pi/picar-x-ai/compass_cal.json
+    from compass_reader import CompassReader
+    compass = CompassReader()
+    heading = compass.read_heading()  # Returns 0-360 degrees
 """
 
+import math
 import time
 import json
-import sys
-import math
-import signal
+import os
 
 try:
     import smbus2 as smbus
 except ImportError:
-    try:
-        import smbus
-    except ImportError:
-        print("ERROR: smbus2 not installed. Run: pip3 install smbus2 --break-system-packages")
-        sys.exit(1)
+    import smbus
 
-# ── QMC5883L I2C config ────────────────────────────────────────────────────────
-QMC5883L_ADDR   = 0x2C   # Non-standard address — ADDR pin pulled high on this module
-REG_DATA        = 0x00   # X LSB, X MSB, Y LSB, Y MSB, Z LSB, Z MSB
-REG_STATUS      = 0x06
-REG_CONTROL1    = 0x09
-REG_CONTROL2    = 0x0A
-REG_SET_RESET   = 0x0B
+# ── QMC5883P registers ─────────────────────────────────────────────────────────
+QMC5883P_ADDR   = 0x2C
+REG_CHIP_ID     = 0x00   # Should return 0x80
+REG_DATA        = 0x01   # X LSB, X MSB, Y LSB, Y MSB, Z LSB, Z MSB
+REG_STATUS      = 0x09
+REG_CONTROL1    = 0x0A
 
-# Output data rate 200Hz, full scale 8G, oversampling 512
-CTRL1_CONTINUOUS = 0x1D
+# Control register 1 settings
+# Bits: [7:6]=OSR(oversampling) [5:4]=ODR(rate) [3:2]=RNG(range) [1:0]=MODE
+# OSR=8(11), ODR=200Hz(11), RNG=8G(10), MODE=Normal(01) = 0xFF
+CTRL1_NORMAL    = 0xFF
 
-CAL_FILE = "/home/pi/picar-x-ai/compass_cal.json"
+CAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "compass_cal.json")
 
-
-def init_compass(bus):
-    """Initialize QMC5883L for continuous measurement."""
-    bus.write_byte_data(QMC5883L_ADDR, REG_SET_RESET, 0x01)
-    time.sleep(0.01)
-    bus.write_byte_data(QMC5883L_ADDR, REG_CONTROL1, CTRL1_CONTINUOUS)
-    time.sleep(0.01)
-    print("QMC5883L initialized.")
+# Magnetic declination for Anderson, SC (~-7.5 degrees)
+DECLINATION = -7.5
 
 
-def read_raw(bus):
-    """Read raw X, Y, Z magnetic field values."""
-    data = bus.read_i2c_block_data(QMC5883L_ADDR, REG_DATA, 6)
-    x = (data[1] << 8) | data[0]
-    y = (data[3] << 8) | data[2]
-    z = (data[5] << 8) | data[4]
-    # Convert to signed 16-bit
-    if x > 32767: x -= 65536
-    if y > 32767: y -= 65536
-    if z > 32767: z -= 65536
-    return x, y, z
+class CompassReader:
+    def __init__(self, bus_num=1):
+        self.bus             = smbus.SMBus(bus_num)
+        self.calibration     = self._load_calibration()
+        self._heading_history = []
+        self._init()
 
-
-def main():
-    print("=" * 55)
-    print("  QMC5883L Compass Calibration")
-    print("=" * 55)
-    print("\nThis calibration corrects for magnetic interference")
-    print("from the PiCar motors and chassis.")
-    print("\nInstructions:")
-    print("  1. Place the car on a flat surface")
-    print("  2. When recording starts, SLOWLY rotate the car")
-    print("     through at least 2 complete 360-degree rotations")
-    print("  3. Keep rotations slow and smooth")
-    print("  4. Press Ctrl+C when done\n")
-
-    try:
-        bus = smbus.SMBus(1)
-        init_compass(bus)
-    except Exception as e:
-        print(f"ERROR: Cannot initialize compass: {e}")
-        print("Check wiring: VCC=3.3V, GND=GND, SDA=GPIO2, SCL=GPIO3")
-        sys.exit(1)
-
-    print("Starting in 3 seconds — get ready to rotate the car...")
-    time.sleep(3)
-    print("\nRECORDING — rotate car slowly now. Press Ctrl+C when done.\n")
-
-    x_min = y_min = z_min =  32767
-    x_max = y_max = z_max = -32768
-    samples = 0
-    recording = True
-
-    def stop(sig, frame):
-        nonlocal recording
-        recording = False
-
-    signal.signal(signal.SIGINT, stop)
-
-    while recording:
+    def _init(self):
+        """Initialize QMC5883P for continuous measurement."""
         try:
-            x, y, z = read_raw(bus)
-            x_min = min(x_min, x); x_max = max(x_max, x)
-            y_min = min(y_min, y); y_max = max(y_max, y)
-            z_min = min(z_min, z); z_max = max(z_max, z)
-            samples += 1
+            # Verify chip ID
+            chip_id = self.bus.read_byte_data(QMC5883P_ADDR, REG_CHIP_ID)
+            if chip_id != 0x80:
+                print(f"Warning: Unexpected chip ID 0x{chip_id:02X} (expected 0x80)")
 
-            # Compute current heading for live feedback
-            x_cal = x - (x_max + x_min) / 2
-            y_cal = y - (y_max + y_min) / 2
-            heading = math.degrees(math.atan2(y_cal, x_cal))
-            if heading < 0:
-                heading += 360
-
-            print(f"  Samples: {samples:4d}  Heading: {heading:6.1f}°  "
-                  f"X:[{x_min:6d},{x_max:6d}]  Y:[{y_min:6d},{y_max:6d}]",
-                  end="\r")
+            # Set continuous measurement mode
+            self.bus.write_byte_data(QMC5883P_ADDR, REG_CONTROL1, CTRL1_NORMAL)
             time.sleep(0.05)
+            print(f"QMC5883P initialized at 0x{QMC5883P_ADDR:02X}. "
+                  f"Calibration: {'loaded' if self.calibration else 'NONE — run compass_calibrate.py'}")
+        except Exception as e:
+            print(f"Compass init error: {e}")
+
+    def _load_calibration(self):
+        if os.path.exists(CAL_FILE):
+            with open(CAL_FILE) as f:
+                return json.load(f)
+        return None
+
+    def _read_raw(self):
+        """Read raw X, Y, Z values from QMC5883P."""
+        # Read 6 bytes starting at REG_DATA (0x01)
+        data = self.bus.read_i2c_block_data(QMC5883P_ADDR, REG_DATA, 6)
+        # QMC5883P: LSB first, then MSB
+        x = (data[1] << 8) | data[0]
+        y = (data[3] << 8) | data[2]
+        z = (data[5] << 8) | data[4]
+        # Convert to signed 16-bit
+        if x > 32767: x -= 65536
+        if y > 32767: y -= 65536
+        if z > 32767: z -= 65536
+        return x, y, z
+
+    def _apply_calibration(self, x, y, z):
+        """Apply hard and soft iron corrections."""
+        if not self.calibration:
+            return x, y, z
+        cal = self.calibration
+        x = (x - cal["x_offset"]) * cal["x_scale"]
+        y = (y - cal["y_offset"]) * cal["y_scale"]
+        z = (z - cal["z_offset"]) * cal["z_scale"]
+        return x, y, z
+
+    def read_heading(self):
+        """
+        Read compass heading in degrees (0-360).
+        0 = North, 90 = East, 180 = South, 270 = West.
+        Returns None on error.
+        """
+        try:
+            x, y, z = self._read_raw()
+            x, y, z = self._apply_calibration(x, y, z)
+
+            heading  = math.degrees(math.atan2(y, x))
+            heading += DECLINATION
+            heading  = heading % 360
+
+            # Smooth with circular rolling average
+            self._heading_history.append(heading)
+            if len(self._heading_history) > 5:
+                self._heading_history.pop(0)
+
+            sin_sum = sum(math.sin(math.radians(h)) for h in self._heading_history)
+            cos_sum = sum(math.cos(math.radians(h)) for h in self._heading_history)
+            smoothed = math.degrees(math.atan2(sin_sum, cos_sum)) % 360
+
+            return round(smoothed, 1)
 
         except Exception as e:
-            print(f"\nRead error: {e}")
-            time.sleep(0.1)
+            print(f"Compass read error: {e}")
+            return None
 
-    print(f"\n\nRecorded {samples} samples.")
+    def read_heading_raw(self):
+        """Read heading without smoothing."""
+        try:
+            x, y, z = self._read_raw()
+            x, y, z = self._apply_calibration(x, y, z)
+            heading = (math.degrees(math.atan2(y, x)) + DECLINATION) % 360
+            return round(heading, 1)
+        except Exception:
+            return None
 
-    if samples < 100:
-        print("WARNING: Too few samples. Run again with more rotations.")
+    def read_xyz(self):
+        """Read raw calibrated X, Y, Z values."""
+        try:
+            x, y, z = self._read_raw()
+            return self._apply_calibration(x, y, z)
+        except Exception:
+            return None, None, None
 
-    # Compute offsets (hard iron correction)
-    x_offset = (x_max + x_min) / 2
-    y_offset = (y_max + y_min) / 2
-    z_offset = (z_max + z_min) / 2
-
-    # Compute scale factors (soft iron correction)
-    x_range = (x_max - x_min) / 2
-    y_range = (y_max - y_min) / 2
-    z_range = (z_max - z_min) / 2
-    avg_range = (x_range + y_range + z_range) / 3
-
-    x_scale = avg_range / x_range if x_range > 0 else 1.0
-    y_scale = avg_range / y_range if y_range > 0 else 1.0
-    z_scale = avg_range / z_range if z_range > 0 else 1.0
-
-    cal = {
-        "x_offset": round(x_offset, 2),
-        "y_offset": round(y_offset, 2),
-        "z_offset": round(z_offset, 2),
-        "x_scale":  round(x_scale,  4),
-        "y_scale":  round(y_scale,  4),
-        "z_scale":  round(z_scale,  4),
-        "x_min": x_min, "x_max": x_max,
-        "y_min": y_min, "y_max": y_max,
-        "z_min": z_min, "z_max": z_max,
-        "samples":  samples,
-    }
-
-    with open(CAL_FILE, "w") as f:
-        json.dump(cal, f, indent=2)
-
-    print(f"\nCalibration saved to: {CAL_FILE}")
-    print(f"\nOffsets:  X={x_offset:.1f}  Y={y_offset:.1f}  Z={z_offset:.1f}")
-    print(f"Scales:   X={x_scale:.3f}  Y={y_scale:.3f}  Z={z_scale:.3f}")
-    print("\nRun this again if the car's heading seems unreliable.")
+    def cardinal(self, heading):
+        """Convert heading to cardinal direction string."""
+        if heading is None:
+            return "?"
+        dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+        idx  = round(heading / 45) % 8
+        return dirs[idx]
 
 
 if __name__ == "__main__":
-    main()
+    print("Testing QMC5883P compass... Press Ctrl+C to stop.")
+    c = CompassReader()
+    while True:
+        try:
+            h   = c.read_heading()
+            r   = c.read_heading_raw()
+            xyz = c.read_xyz()
+            if h is not None:
+                print(f"  Heading: {h:6.1f}°  Raw: {r:6.1f}°  "
+                      f"Dir: {c.cardinal(h):<2}  "
+                      f"XYZ: ({xyz[0]:.0f}, {xyz[1]:.0f}, {xyz[2]:.0f})",
+                      end="\r")
+            else:
+                print("  No reading", end="\r")
+            time.sleep(0.1)
+        except KeyboardInterrupt:
+            print("\nDone.")
+            break

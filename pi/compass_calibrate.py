@@ -33,31 +33,30 @@ except ImportError:
         print("ERROR: smbus2 not installed. Run: pip3 install smbus2 --break-system-packages")
         sys.exit(1)
 
-# ── QMC5883L I2C config ────────────────────────────────────────────────────────
-QMC5883L_ADDR   = 0x0D
-REG_DATA        = 0x00   # X LSB, X MSB, Y LSB, Y MSB, Z LSB, Z MSB
-REG_STATUS      = 0x06
-REG_CONTROL1    = 0x09
-REG_CONTROL2    = 0x0A
-REG_SET_RESET   = 0x0B
+# ── QMC5883P I2C config ────────────────────────────────────────────────────────
+QMC5883L_ADDR   = 0x2C   # QMC5883P default address
+REG_CHIP_ID     = 0x00   # Chip ID register (returns 0x80)
+REG_DATA        = 0x01   # X LSB, X MSB, Y LSB, Y MSB, Z LSB, Z MSB
+REG_STATUS      = 0x09
+REG_CONTROL1    = 0x0A
 
-# Output data rate 200Hz, full scale 8G, oversampling 512
-CTRL1_CONTINUOUS = 0x1D
+# Control: OSR=8, ODR=200Hz, RNG=8G, MODE=Normal
+CTRL1_CONTINUOUS = 0xFF
 
 CAL_FILE = "/home/pi/picar-x-ai/compass_cal.json"
 
 
 def init_compass(bus):
-    """Initialize QMC5883L for continuous measurement."""
-    bus.write_byte_data(QMC5883L_ADDR, REG_SET_RESET, 0x01)
-    time.sleep(0.01)
+    """Initialize QMC5883P for continuous measurement."""
+    chip_id = bus.read_byte_data(QMC5883L_ADDR, REG_CHIP_ID)
+    print(f"Chip ID: 0x{chip_id:02X} (expected 0x80)")
     bus.write_byte_data(QMC5883L_ADDR, REG_CONTROL1, CTRL1_CONTINUOUS)
-    time.sleep(0.01)
-    print("QMC5883L initialized.")
+    time.sleep(0.05)
+    print("QMC5883P initialized.")
 
 
 def read_raw(bus):
-    """Read raw X, Y, Z magnetic field values."""
+    """Read raw X, Y, Z magnetic field values from QMC5883P."""
     data = bus.read_i2c_block_data(QMC5883L_ADDR, REG_DATA, 6)
     x = (data[1] << 8) | data[0]
     y = (data[3] << 8) | data[2]
