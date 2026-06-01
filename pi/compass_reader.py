@@ -1,198 +1,118 @@
 #!/usr/bin/env python3
 """
-compass_reader_hmc5883l.py — HMC5883L Compass Reader Module
+compass_reader.py — BNO055 Compass Reader Module
 
-For the genuine Honeywell HMC5883L chip (GY-273 module).
-I2C address: 0x1E (confirms genuine chip — clones use 0x0D or 0x2C)
+Uses the Adafruit BNO055 9-DOF IMU for reliable heading.
+The BNO055 handles all sensor fusion internally — no calibration
+math needed, just read euler[0] for heading in degrees.
 
-Register map (different from QMC variants):
-  0x00 = Configuration Register A
-  0x01 = Configuration Register B (gain)
-  0x02 = Mode Register
-  0x03-0x08 = Data Output Registers (X MSB, X LSB, Z MSB, Z LSB, Y MSB, Y LSB)
-  0x09 = Status Register
-  0x0A-0x0C = Identification Registers (should read 'H','4','3')
+I2C address: 0x28 (default) or 0x29 (ADR pin high)
+No conflicts with Robot Hat MCU (0x14) or QMC compass (0x2C)
+
+Install library:
+    pip3 install adafruit-circuitpython-bno055 --break-system-packages
 
 Usage:
-    from compass_reader_hmc5883l import CompassReader
+    from compass_reader import CompassReader
     compass = CompassReader()
     heading = compass.read_heading()  # Returns 0-360 degrees
-
-Note: Deploy this file as compass_reader.py on the Pi when HMC5883L is confirmed.
 """
 
-import math
 import time
+import math
 import json
 import os
 
 try:
-    import smbus2 as smbus
+    import board
+    import adafruit_bno055
+    BNO055_AVAILABLE = True
 except ImportError:
-    import smbus
-
-# ── HMC5883L registers ─────────────────────────────────────────────────────────
-HMC5883L_ADDR  = 0x1E
-
-REG_CONFIG_A   = 0x00   # Configuration A: samples, data rate, measurement mode
-REG_CONFIG_B   = 0x01   # Configuration B: gain
-REG_MODE       = 0x02   # Mode: continuous or single measurement
-REG_DATA_X_MSB = 0x03   # X axis MSB
-REG_DATA_X_LSB = 0x04   # X axis LSB
-REG_DATA_Z_MSB = 0x05   # Z axis MSB (note: Z before Y in HMC5883L)
-REG_DATA_Z_LSB = 0x06   # Z axis LSB
-REG_DATA_Y_MSB = 0x07   # Y axis MSB
-REG_DATA_Y_LSB = 0x08   # Y axis LSB
-REG_STATUS     = 0x09   # Status
-REG_ID_A       = 0x0A   # ID Register A (should be 'H' = 0x48)
-REG_ID_B       = 0x0B   # ID Register B (should be '4' = 0x34)
-REG_ID_C       = 0x0C   # ID Register C (should be '3' = 0x33)
-
-# Configuration A: 8 samples averaged, 15Hz output, normal measurement
-CONFIG_A_DEFAULT = 0x70  # 0b01110000
-
-# Configuration B: Gain = 1.3 Ga (default, good for most environments)
-# Higher gain = more sensitive but saturates in strong fields
-# 0x20 = ±1.3Ga, 0x40 = ±1.9Ga, 0x60 = ±2.5Ga, 0x80 = ±4.0Ga
-CONFIG_B_DEFAULT = 0x20
-
-# Mode: continuous measurement
-MODE_CONTINUOUS = 0x00
+    BNO055_AVAILABLE = False
+    print("Warning: adafruit-circuitpython-bno055 not installed.")
+    print("Run: pip3 install adafruit-circuitpython-bno055 --break-system-packages")
 
 CAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "compass_cal.json")
 
-# Magnetic declination for Anderson/Easley SC (~-7.5 degrees west)
-DECLINATION = -7.5
-
 
 class CompassReader:
-    def __init__(self, bus_num=1):
-        self.bus              = smbus.SMBus(bus_num)
-        self.calibration      = self._load_calibration()
+    def __init__(self):
+        self.sensor           = None
         self._heading_history = []
+        self._cal_data        = None
         self._init()
 
     def _init(self):
-        """Initialize HMC5883L for continuous measurement."""
+        """Initialize BNO055."""
+        if not BNO055_AVAILABLE:
+            print("BNO055 library not available.")
+            return
         try:
-            # Verify chip identity
-            id_a = self.bus.read_byte_data(HMC5883L_ADDR, REG_ID_A)
-            id_b = self.bus.read_byte_data(HMC5883L_ADDR, REG_ID_B)
-            id_c = self.bus.read_byte_data(HMC5883L_ADDR, REG_ID_C)
+            i2c          = board.I2C()
+            self.sensor  = adafruit_bno055.BNO055_I2C(i2c)
 
-            if id_a == 0x48 and id_b == 0x34 and id_c == 0x33:
-                print("HMC5883L verified — genuine Honeywell chip ✓")
+            # Restore saved calibration if available
+            cal = self._load_calibration()
+            if cal:
+                self.sensor.offsets_magnetometer  = tuple(cal["mag_offsets"])
+                self.sensor.offsets_accelerometer = tuple(cal["accel_offsets"])
+                self.sensor.offsets_gyroscope     = tuple(cal["gyro_offsets"])
+                print("BNO055 initialized — calibration restored from file.")
             else:
-                print(f"Warning: Unexpected chip ID: 0x{id_a:02X} 0x{id_b:02X} 0x{id_c:02X}")
-                print("Expected: 0x48 0x34 0x33 (H43)")
-                print("May be a QMC5883L clone — consider using compass_reader.py instead")
-
-            # Configure
-            self.bus.write_byte_data(HMC5883L_ADDR, REG_CONFIG_A, CONFIG_A_DEFAULT)
-            self.bus.write_byte_data(HMC5883L_ADDR, REG_CONFIG_B, CONFIG_B_DEFAULT)
-            self.bus.write_byte_data(HMC5883L_ADDR, REG_MODE,     MODE_CONTINUOUS)
-            time.sleep(0.1)  # Wait for first measurement
-
-            print(f"HMC5883L initialized at 0x{HMC5883L_ADDR:02X}. "
-                  f"Calibration: {'loaded' if self.calibration else 'NONE — run compass_calibrate.py'}")
+                print("BNO055 initialized — no saved calibration, move car to calibrate.")
 
         except Exception as e:
-            print(f"Compass init error: {e}")
-            print("Check wiring: VCC=3.3V, GND=GND, SDA=GPIO2, SCL=GPIO3")
+            print(f"BNO055 init error: {e}")
+            self.sensor = None
 
     def _load_calibration(self):
-        """Load calibration offsets from file."""
+        """Load saved calibration offsets."""
         if os.path.exists(CAL_FILE):
-            with open(CAL_FILE) as f:
-                return json.load(f)
+            try:
+                with open(CAL_FILE) as f:
+                    return json.load(f)
+            except Exception:
+                pass
         return None
 
-    def _read_raw(self):
+    def save_calibration(self):
         """
-        Read raw X, Y, Z values from HMC5883L.
-        Note: HMC5883L data register order is X, Z, Y (not X, Y, Z!)
+        Save current calibration offsets to file.
+        Call this when calibration_status shows (3,3,3,3).
+        Offsets are restored on next startup for instant calibration.
         """
-        data = self.bus.read_i2c_block_data(HMC5883L_ADDR, REG_DATA_X_MSB, 6)
-
-        # HMC5883L: MSB first, order is X, Z, Y
-        x = (data[0] << 8) | data[1]
-        z = (data[2] << 8) | data[3]
-        y = (data[4] << 8) | data[5]
-
-        # Convert to signed 16-bit
-        if x > 32767: x -= 65536
-        if y > 32767: y -= 65536
-        if z > 32767: z -= 65536
-
-        # Check for overflow (-4096 indicates saturation)
-        if x == -4096 or y == -4096 or z == -4096:
-            return None, None, None
-
-        return x, y, z
-
-    def _apply_calibration(self, x, y, z):
-        """Apply hard and soft iron corrections."""
-        if not self.calibration:
-            return x, y, z
-        cal = self.calibration
-        x = (x - cal["x_offset"]) * cal["x_scale"]
-        y = (y - cal["y_offset"]) * cal["y_scale"]
-        z = (z - cal["z_offset"]) * cal["z_scale"]
-        return x, y, z
-
-    def self_test(self):
-        """
-        Run HMC5883L built-in self test.
-        Returns True if sensor passes, False if failed.
-        """
+        if not self.sensor:
+            return False
         try:
-            print("Running HMC5883L self test...")
-
-            # Enable positive bias self test
-            self.bus.write_byte_data(HMC5883L_ADDR, REG_CONFIG_A, 0x71)  # positive bias
-            self.bus.write_byte_data(HMC5883L_ADDR, REG_MODE, 0x00)
-            time.sleep(0.1)
-
-            x, y, z = self._read_raw()
-
-            # Restore normal config
-            self.bus.write_byte_data(HMC5883L_ADDR, REG_CONFIG_A, CONFIG_A_DEFAULT)
-            self.bus.write_byte_data(HMC5883L_ADDR, REG_MODE, MODE_CONTINUOUS)
-
-            if x is None:
-                print("Self test failed — overflow detected")
-                return False
-
-            # At gain 1.3Ga, self test should produce values between 243-575
-            passed = all(243 <= abs(v) <= 575 for v in [x, y, z] if v is not None)
-            print(f"Self test: X={x} Y={y} Z={z} — {'PASSED ✓' if passed else 'FAILED ✗'}")
-            return passed
-
+            cal = {
+                "mag_offsets":   list(self.sensor.offsets_magnetometer),
+                "accel_offsets": list(self.sensor.offsets_accelerometer),
+                "gyro_offsets":  list(self.sensor.offsets_gyroscope),
+            }
+            with open(CAL_FILE, "w") as f:
+                json.dump(cal, f, indent=2)
+            print(f"Calibration saved to {CAL_FILE}")
+            return True
         except Exception as e:
-            print(f"Self test error: {e}")
+            print(f"Failed to save calibration: {e}")
             return False
 
     def read_heading(self):
         """
         Read compass heading in degrees (0-360).
         0=North, 90=East, 180=South, 270=West.
-        Returns None on error or overflow.
+        Returns None on error.
         """
+        if not self.sensor:
+            return None
         try:
-            x, y, z = self._read_raw()
-            if x is None:
+            heading = self.sensor.euler[0]
+            if heading is None:
                 return None
 
-            x, y, z = self._apply_calibration(x, y, z)
-
-            # Calculate heading
-            heading  = math.degrees(math.atan2(y, x))
-            heading += DECLINATION
-            heading  = heading % 360
-
-            # Smooth with circular rolling average (5 readings)
+            # Smooth with circular rolling average (3 readings)
             self._heading_history.append(heading)
-            if len(self._heading_history) > 5:
+            if len(self._heading_history) > 3:
                 self._heading_history.pop(0)
 
             sin_sum = sum(math.sin(math.radians(h)) for h in self._heading_history)
@@ -207,51 +127,76 @@ class CompassReader:
 
     def read_heading_raw(self):
         """Read heading without smoothing."""
+        if not self.sensor:
+            return None
         try:
-            x, y, z = self._read_raw()
-            if x is None:
-                return None
-            x, y, z = self._apply_calibration(x, y, z)
-            return round((math.degrees(math.atan2(y, x)) + DECLINATION) % 360, 1)
+            h = self.sensor.euler[0]
+            return round(h, 1) if h is not None else None
         except Exception:
             return None
 
-    def read_xyz(self):
-        """Read calibrated X, Y, Z values."""
+    def calibration_status(self):
+        """
+        Returns (system, gyro, accel, mag) calibration levels (0-3 each).
+        3 = fully calibrated, 0 = not calibrated.
+        System=3 means all sensors are fully calibrated.
+        """
+        if not self.sensor:
+            return (0, 0, 0, 0)
         try:
-            x, y, z = self._read_raw()
-            if x is None:
-                return None, None, None
-            return self._apply_calibration(x, y, z)
+            return self.sensor.calibration_status
         except Exception:
-            return None, None, None
+            return (0, 0, 0, 0)
+
+    def is_calibrated(self, min_level=2):
+        """
+        Returns True if magnetometer calibration is at or above min_level.
+        min_level=2 is good enough for navigation.
+        min_level=3 is fully calibrated.
+        """
+        cal = self.calibration_status()
+        return cal[3] >= min_level  # cal[3] = magnetometer
 
     def cardinal(self, heading):
-        """Convert heading to cardinal direction."""
+        """Convert heading to cardinal direction string."""
         if heading is None:
             return "?"
         dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
         return dirs[round(heading / 45) % 8]
 
+    @property
+    def ok(self):
+        """True if sensor is connected and returning valid readings."""
+        return self.sensor is not None and self.read_heading_raw() is not None
+
 
 if __name__ == "__main__":
-    print("Testing HMC5883L compass... Press Ctrl+C to stop.")
+    print("Testing BNO055 compass...")
+    print("Move car in figure-8 pattern to calibrate. Ctrl+C to stop.\n")
+
     c = CompassReader()
-    c.self_test()
-    print()
-    while True:
-        try:
+
+    if not c.ok:
+        print("ERROR: BNO055 not available.")
+        exit(1)
+
+    try:
+        while True:
             h   = c.read_heading()
             r   = c.read_heading_raw()
-            xyz = c.read_xyz()
-            if h is not None:
-                print(f"  Heading: {h:6.1f}°  Raw: {r:6.1f}°  "
-                      f"Dir: {c.cardinal(h):<2}  "
-                      f"XYZ: ({xyz[0]:.0f}, {xyz[1]:.0f}, {xyz[2]:.0f})",
-                      end="\r")
-            else:
-                print("  No reading (overflow or error)", end="\r")
+            cal = c.calibration_status()
+            print(f"  Heading: {h:6.1f}°  Raw: {r:6.1f}°  "
+                  f"Dir: {c.cardinal(h):<2}  "
+                  f"Cal: sys={cal[0]} gyro={cal[1]} accel={cal[2]} mag={cal[3]}",
+                  end="\r", flush=True)
             time.sleep(0.1)
-        except KeyboardInterrupt:
-            print("\nDone.")
-            break
+
+    except KeyboardInterrupt:
+        print("\n\nSaving calibration...")
+        cal = c.calibration_status()
+        if cal[3] >= 2:
+            c.save_calibration()
+            print("Done! Calibration saved — will be restored on next startup.")
+        else:
+            print(f"Magnetometer calibration too low ({cal[3]}/3) — not saving.")
+            print("Move car in figure-8 pattern and try again.")
