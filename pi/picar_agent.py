@@ -76,7 +76,17 @@ import threading
 import signal
 import time
 
+# ── Reset MCU ─────────────────────────────────────────────────────────────────
+try:
+    from robot_hat import reset_mcu
+    reset_mcu()
+    time.sleep(0.5)   # slightly longer wait to let I2C bus settle
+    print("MCU reset complete.")
+except Exception as e:
+    print(f"MCU reset skipped: {e}")
+
 # ── Compass ───────────────────────────────────────────────────────────────────
+# Must initialize AFTER MCU reset — reset disturbs the I2C bus
 try:
     from compass_reader import CompassReader
     compass = CompassReader()
@@ -86,16 +96,6 @@ except Exception as e:
     compass = None
     COMPASS_AVAILABLE = False
     print(f"Compass not available: {e}")
-
-
-# ── Reset MCU ─────────────────────────────────────────────────────────────────
-try:
-    from robot_hat import reset_mcu
-    reset_mcu()
-    time.sleep(0.2)
-    print("MCU reset complete.")
-except Exception as e:
-    print(f"MCU reset skipped: {e}")
 
 # ── App setup ──────────────────────────────────────────────────────────────────
 app = FastAPI()
