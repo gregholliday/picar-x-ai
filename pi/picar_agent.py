@@ -80,22 +80,10 @@ import time
 try:
     from robot_hat import reset_mcu
     reset_mcu()
-    time.sleep(0.5)   # slightly longer wait to let I2C bus settle
+    time.sleep(0.5)
     print("MCU reset complete.")
 except Exception as e:
     print(f"MCU reset skipped: {e}")
-
-# ── Compass ───────────────────────────────────────────────────────────────────
-# Must initialize AFTER MCU reset — reset disturbs the I2C bus
-try:
-    from compass_reader import CompassReader
-    compass = CompassReader()
-    COMPASS_AVAILABLE = True
-    print("Compass initialized.")
-except Exception as e:
-    compass = None
-    COMPASS_AVAILABLE = False
-    print(f"Compass not available: {e}")
 
 # ── App setup ──────────────────────────────────────────────────────────────────
 app = FastAPI()
@@ -107,6 +95,20 @@ app.add_middleware(
 )
 
 px = Picarx()
+
+# ── Compass ───────────────────────────────────────────────────────────────────
+# MUST initialize AFTER px = Picarx() — Picarx resets the I2C bus internally
+# which knocks the BNO055 out of fusion mode if initialized before Picarx.
+time.sleep(0.5)  # let I2C bus settle after Picarx init
+try:
+    from compass_reader import CompassReader
+    compass = CompassReader()
+    COMPASS_AVAILABLE = True
+    print("Compass initialized.")
+except Exception as e:
+    compass = None
+    COMPASS_AVAILABLE = False
+    print(f"Compass not available: {e}")
 
 # ── Sound ──────────────────────────────────────────────────────────────────────
 try:
