@@ -243,10 +243,17 @@ def compass_worker():
     while True:
         try:
             if compass is not None:
+                # Debug: check raw sensor value
+                if tick % 10 == 0:
+                    try:
+                        raw_euler = compass.sensor.euler if compass.sensor else "sensor is None"
+                        print(f"Compass raw euler: {raw_euler}")
+                    except Exception as re:
+                        print(f"Compass raw euler error: {re}")
                 heading = compass.read_heading()
                 state["compass_heading"] = heading
                 state["compass_ok"]      = heading is not None
-                if tick % 10 == 0:  # log every 5 seconds
+                if tick % 10 == 0:
                     print(f"Compass worker tick {tick}: heading={heading} ok={heading is not None}")
             else:
                 if tick % 10 == 0:
@@ -255,7 +262,7 @@ def compass_worker():
             print(f"Compass worker error: {e}")
             state["compass_ok"] = False
         tick += 1
-        time.sleep(0.5)   # 2Hz — plenty for navigation
+        time.sleep(0.5)
 
 threading.Thread(target=compass_worker, daemon=True).start()
 
