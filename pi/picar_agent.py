@@ -236,7 +236,8 @@ def sensor_worker():
                 heading = compass.read_heading()
                 state["compass_heading"] = heading
                 state["compass_ok"]      = heading is not None
-            except Exception:
+            except Exception as e:
+                print(f"Compass read exception: {e}")
                 state["compass_ok"] = False
 
         time.sleep(0.1)
