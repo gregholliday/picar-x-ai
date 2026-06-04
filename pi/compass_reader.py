@@ -185,10 +185,13 @@ if __name__ == "__main__":
             h   = c.read_heading()
             r   = c.read_heading_raw()
             cal = c.calibration_status()
-            print(f"  Heading: {h:6.1f}°  Raw: {r:6.1f}°  "
-                  f"Dir: {c.cardinal(h):<2}  "
-                  f"Cal: sys={cal[0]} gyro={cal[1]} accel={cal[2]} mag={cal[3]}",
-                  end="\r", flush=True)
+            if h is not None and r is not None:
+                print(f"  Heading: {h:6.1f}°  Raw: {r:6.1f}°  "
+                      f"Dir: {c.cardinal(h):<2}  "
+                      f"Cal: sys={cal[0]} gyro={cal[1]} accel={cal[2]} mag={cal[3]}",
+                      end="\r", flush=True)
+            else:
+                print("  Waiting for heading...", end="\r", flush=True)
             time.sleep(0.1)
 
     except KeyboardInterrupt:
