@@ -240,31 +240,56 @@ threading.Thread(target=sensor_worker, daemon=True).start()
 
 # ── Compass polling thread (2Hz) ───────────────────────────────────────────────
 def compass_worker():
+    """
+    Dedicated compass polling thread at 2Hz.
+    Handles BNO055 recovery if sensor is knocked out of fusion mode
+    by Picarx or Vilib initialization disturbing the I2C bus.
+    """
     print("Compass worker started.")
-    tick = 0
+    tick         = 0
+    none_streak  = 0
+
     while True:
         try:
-            if compass is not None:
-                # Debug: check raw sensor value
-                if tick % 10 == 0:
-                    try:
-                        raw_euler = compass.sensor.euler if compass.sensor else "sensor is None"
-                        print(f"Compass raw euler: {raw_euler}")
-                    except Exception as re:
-                        print(f"Compass raw euler error: {re}")
+            if compass is not None and compass.sensor is not None:
                 heading = compass.read_heading()
-                state["compass_heading"] = heading
-                state["compass_ok"]      = heading is not None
-                if tick % 10 == 0:
-                    print(f"Compass worker tick {tick}: heading={heading} ok={heading is not None}")
-            else:
-                if tick % 10 == 0:
-                    print(f"Compass worker tick {tick}: compass is None")
+
+                if heading is not None:
+                    state["compass_heading"] = heading
+                    state["compass_ok"]      = True
+                    none_streak              = 0
+                else:
+                    none_streak += 1
+                    state["compass_ok"] = False
+
+                    # After 10 consecutive None readings (~5 seconds),
+                    # reinitialize the BNO055 — it was knocked out of fusion mode
+                    if none_streak >= 10:
+                        print("Compass: BNO055 not responding, reinitializing...")
+                        try:
+                            import adafruit_bno055
+                            import board
+                            i2c = board.I2C()
+                            compass.sensor = adafruit_bno055.BNO055_I2C(i2c)
+                            # Restore calibration offsets
+                            cal = compass._load_calibration()
+                            if cal:
+                                compass.sensor.offsets_magnetometer  = tuple(cal["mag_offsets"])
+                                compass.sensor.offsets_accelerometer = tuple(cal["accel_offsets"])
+                                compass.sensor.offsets_gyroscope     = tuple(cal["gyro_offsets"])
+                            print("Compass: BNO055 reinitialized.")
+                            none_streak = 0
+                            time.sleep(1.0)  # wait for sensor to settle
+                        except Exception as re:
+                            print(f"Compass: reinitialization failed: {re}")
+                            none_streak = 0  # reset to try again later
+
         except Exception as e:
             print(f"Compass worker error: {e}")
             state["compass_ok"] = False
+
         tick += 1
-        time.sleep(0.5)
+        time.sleep(0.5)   # 2Hz
 
 threading.Thread(target=compass_worker, daemon=True).start()
 
