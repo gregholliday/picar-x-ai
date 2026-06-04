@@ -1,174 +1,96 @@
-#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2023 JG for Cedar Grove Maker Studios
+# SPDX-License-Identifier: MIT
+
 """
-compass_calibrate.py — QMC5883L Compass Calibration Tool
+`bno055_calibrator.py`
+===============================================================================
+A CircuitPython module for calibrating the BNo055 9-DoF sensor. After manually
+calibrating the sensor, the module produces calibration offset tuples for use
+in project code.
 
-Run this on the Pi BEFORE using the compass for navigation.
-Slowly rotate the car 360 degrees (at least 2 full rotations) while
-this script runs. It captures the min/max magnetic field values on
-each axis and saves calibration offsets to compass_cal.json.
+* Author(s): JG for Cedar Grove Maker Studios
 
-These offsets correct for:
-  - Hard iron distortion (permanent magnets, motors, steel in chassis)
-  - Sensor zero offset
-
-Usage:
-  python3 compass_calibrate.py
-
-Saves calibration to:
-  /home/pi/picar-x-ai/compass_cal.json
+Implementation Notes
+--------------------
+**Hardware:**
+* Adafruit BNo055 9-DoF sensor
+**Software and Dependencies:**
+* Driver library for the sensor in the Adafruit CircuitPython Library Bundle
+* Adafruit CircuitPython firmware for the supported boards:
+  https://circuitpython.org/downloads
 """
 
 import time
-import json
-import sys
-import math
-import signal
 
-try:
-    import smbus2 as smbus
-except ImportError:
-    try:
-        import smbus
-    except ImportError:
-        print("ERROR: smbus2 not installed. Run: pip3 install smbus2 --break-system-packages")
-        sys.exit(1)
+import board
 
-# ── QMC5883P I2C config ────────────────────────────────────────────────────────
-QMC5883L_ADDR   = 0x2C   # QMC5883P default address
-REG_CHIP_ID     = 0x00   # Chip ID register (returns 0x80)
-REG_DATA        = 0x01   # X LSB, X MSB, Y LSB, Y MSB, Z LSB, Z MSB
-REG_STATUS      = 0x09
-REG_CONTROL1    = 0x0A
-
-# Control: OSR=8, ODR=200Hz, RNG=8G, MODE=Normal
-CTRL1_CONTINUOUS = 0xFF
-
-CAL_FILE = "/home/pi/picar-x-ai/compass_cal.json"
+import adafruit_bno055
 
 
-def init_compass(bus):
-    """Initialize QMC5883P for continuous measurement."""
-    chip_id = bus.read_byte_data(QMC5883L_ADDR, REG_CHIP_ID)
-    print(f"Chip ID: 0x{chip_id:02X} (expected 0x80)")
-    bus.write_byte_data(QMC5883L_ADDR, REG_CONTROL1, CTRL1_CONTINUOUS)
-    time.sleep(0.05)
-    print("QMC5883P initialized.")
+class Mode:
+    CONFIG_MODE = 0x00
+    ACCONLY_MODE = 0x01
+    MAGONLY_MODE = 0x02
+    GYRONLY_MODE = 0x03
+    ACCMAG_MODE = 0x04
+    ACCGYRO_MODE = 0x05
+    MAGGYRO_MODE = 0x06
+    AMG_MODE = 0x07
+    IMUPLUS_MODE = 0x08
+    COMPASS_MODE = 0x09
+    M4G_MODE = 0x0A
+    NDOF_FMC_OFF_MODE = 0x0B
+    NDOF_MODE = 0x0C
 
 
-def read_raw(bus):
-    """Read raw X, Y, Z magnetic field values from QMC5883P."""
-    data = bus.read_i2c_block_data(QMC5883L_ADDR, REG_DATA, 6)
-    x = (data[1] << 8) | data[0]
-    y = (data[3] << 8) | data[2]
-    z = (data[5] << 8) | data[4]
-    # Convert to signed 16-bit
-    if x > 32767: x -= 65536
-    if y > 32767: y -= 65536
-    if z > 32767: z -= 65536
-    return x, y, z
+# Uncomment these lines for UART interface connection
+# uart = board.UART()
+# sensor = adafruit_bno055.BNO055_UART(uart)
 
+# Instantiate I2C interface connection
+# i2c = board.I2C()  # For board.SCL and board.SDA
+i2c = board.STEMMA_I2C()  # For the built-in STEMMA QT connection
+sensor = adafruit_bno055.BNO055_I2C(i2c)
+sensor.mode = Mode.NDOF_MODE  # Set the sensor to NDOF_MODE
 
-def main():
-    print("=" * 55)
-    print("  QMC5883L Compass Calibration")
-    print("=" * 55)
-    print("\nThis calibration corrects for magnetic interference")
-    print("from the PiCar motors and chassis.")
-    print("\nInstructions:")
-    print("  1. Place the car on a flat surface")
-    print("  2. When recording starts, SLOWLY rotate the car")
-    print("     through at least 2 complete 360-degree rotations")
-    print("  3. Keep rotations slow and smooth")
-    print("  4. Press Ctrl+C when done\n")
+print("Magnetometer: Perform the figure-eight calibration dance.")
+while not sensor.calibration_status[3] == 3:
+    # Calibration Dance Step One: Magnetometer
+    #   Move sensor away from magnetic interference or shields
+    #   Perform the figure-eight until calibrated
+    print(f"Mag Calib Status: {100 / 3 * sensor.calibration_status[3]:3.0f}%")
+    time.sleep(1)
+print("... CALIBRATED")
+time.sleep(1)
 
-    try:
-        bus = smbus.SMBus(1)
-        init_compass(bus)
-    except Exception as e:
-        print(f"ERROR: Cannot initialize compass: {e}")
-        print("Check wiring: VCC=3.3V, GND=GND, SDA=GPIO2, SCL=GPIO3")
-        sys.exit(1)
+print("Accelerometer: Perform the six-step calibration dance.")
+while not sensor.calibration_status[2] == 3:
+    # Calibration Dance Step Two: Accelerometer
+    #   Place sensor board into six stable positions for a few seconds each:
+    #    1) x-axis right, y-axis up,    z-axis away
+    #    2) x-axis up,    y-axis left,  z-axis away
+    #    3) x-axis left,  y-axis down,  z-axis away
+    #    4) x-axis down,  y-axis right, z-axis away
+    #    5) x-axis left,  y-axis right, z-axis up
+    #    6) x-axis right, y-axis left,  z-axis down
+    #   Repeat the steps until calibrated
+    print(f"Accel Calib Status: {100 / 3 * sensor.calibration_status[2]:3.0f}%")
+    time.sleep(1)
+print("... CALIBRATED")
+time.sleep(1)
 
-    print("Starting in 3 seconds — get ready to rotate the car...")
-    time.sleep(3)
-    print("\nRECORDING — rotate car slowly now. Press Ctrl+C when done.\n")
+print("Gyroscope: Perform the hold-in-place calibration dance.")
+while not sensor.calibration_status[1] == 3:
+    # Calibration Dance Step Three: Gyroscope
+    #  Place sensor in any stable position for a few seconds
+    #  (Accelerometer calibration may also calibrate the gyro)
+    print(f"Gyro Calib Status: {100 / 3 * sensor.calibration_status[1]:3.0f}%")
+    time.sleep(1)
+print("... CALIBRATED")
+time.sleep(1)
 
-    x_min = y_min = z_min =  32767
-    x_max = y_max = z_max = -32768
-    samples = 0
-    recording = True
-
-    def stop(sig, frame):
-        nonlocal recording
-        recording = False
-
-    signal.signal(signal.SIGINT, stop)
-
-    while recording:
-        try:
-            x, y, z = read_raw(bus)
-            x_min = min(x_min, x); x_max = max(x_max, x)
-            y_min = min(y_min, y); y_max = max(y_max, y)
-            z_min = min(z_min, z); z_max = max(z_max, z)
-            samples += 1
-
-            # Compute current heading for live feedback
-            x_cal = x - (x_max + x_min) / 2
-            y_cal = y - (y_max + y_min) / 2
-            heading = math.degrees(math.atan2(y_cal, x_cal))
-            if heading < 0:
-                heading += 360
-
-            print(f"  Samples: {samples:4d}  Heading: {heading:6.1f}°  "
-                  f"X:[{x_min:6d},{x_max:6d}]  Y:[{y_min:6d},{y_max:6d}]",
-                  end="\r")
-            time.sleep(0.05)
-
-        except Exception as e:
-            print(f"\nRead error: {e}")
-            time.sleep(0.1)
-
-    print(f"\n\nRecorded {samples} samples.")
-
-    if samples < 100:
-        print("WARNING: Too few samples. Run again with more rotations.")
-
-    # Compute offsets (hard iron correction)
-    x_offset = (x_max + x_min) / 2
-    y_offset = (y_max + y_min) / 2
-    z_offset = (z_max + z_min) / 2
-
-    # Compute scale factors (soft iron correction)
-    x_range = (x_max - x_min) / 2
-    y_range = (y_max - y_min) / 2
-    z_range = (z_max - z_min) / 2
-    avg_range = (x_range + y_range + z_range) / 3
-
-    x_scale = avg_range / x_range if x_range > 0 else 1.0
-    y_scale = avg_range / y_range if y_range > 0 else 1.0
-    z_scale = avg_range / z_range if z_range > 0 else 1.0
-
-    cal = {
-        "x_offset": round(x_offset, 2),
-        "y_offset": round(y_offset, 2),
-        "z_offset": round(z_offset, 2),
-        "x_scale":  round(x_scale,  4),
-        "y_scale":  round(y_scale,  4),
-        "z_scale":  round(z_scale,  4),
-        "x_min": x_min, "x_max": x_max,
-        "y_min": y_min, "y_max": y_max,
-        "z_min": z_min, "z_max": z_max,
-        "samples":  samples,
-    }
-
-    with open(CAL_FILE, "w") as f:
-        json.dump(cal, f, indent=2)
-
-    print(f"\nCalibration saved to: {CAL_FILE}")
-    print(f"\nOffsets:  X={x_offset:.1f}  Y={y_offset:.1f}  Z={z_offset:.1f}")
-    print(f"Scales:   X={x_scale:.3f}  Y={y_scale:.3f}  Z={z_scale:.3f}")
-    print("\nRun this again if the car's heading seems unreliable.")
-
-
-if __name__ == "__main__":
-    main()
+print("\nCALIBRATION COMPLETED")
+print("Insert these preset offset values into project code:")
+print(f"  Offsets_Magnetometer:  {sensor.offsets_magnetometer}")
+print(f"  Offsets_Gyroscope:     {sensor.offsets_gyroscope}")
+print(f"  Offsets_Accelerometer: {sensor.offsets_accelerometer}")
