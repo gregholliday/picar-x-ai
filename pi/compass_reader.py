@@ -32,8 +32,8 @@ except ImportError:
     print("Warning: adafruit-circuitpython-bno055 not installed.")
     print("Run: pip3 install adafruit-circuitpython-bno055 --break-system-packages")
 
-CAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "compass_cal.json")
-
+#CAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "compass_cal.json")
+CAL_FILE = "/mnt/ai-lab/picar-x-ai/pi/compass_cal.json"
 
 class CompassReader:
     def __init__(self):

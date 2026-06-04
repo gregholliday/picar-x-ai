@@ -231,7 +231,8 @@ def sensor_worker():
                 pass
 
         # Read compass heading
-        if compass is not None:
+        time.sleep(0.02)
+        if compass is not None and sensor_worker.tick % 5 == 0:
             try:
                 heading = compass.read_heading()
                 state["compass_heading"] = heading
