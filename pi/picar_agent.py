@@ -239,15 +239,22 @@ threading.Thread(target=sensor_worker, daemon=True).start()
 # ── Compass polling thread (2Hz) ───────────────────────────────────────────────
 def compass_worker():
     print("Compass worker started.")
+    tick = 0
     while True:
         try:
             if compass is not None:
                 heading = compass.read_heading()
                 state["compass_heading"] = heading
                 state["compass_ok"]      = heading is not None
+                if tick % 10 == 0:  # log every 5 seconds
+                    print(f"Compass worker tick {tick}: heading={heading} ok={heading is not None}")
+            else:
+                if tick % 10 == 0:
+                    print(f"Compass worker tick {tick}: compass is None")
         except Exception as e:
             print(f"Compass worker error: {e}")
             state["compass_ok"] = False
+        tick += 1
         time.sleep(0.5)   # 2Hz — plenty for navigation
 
 threading.Thread(target=compass_worker, daemon=True).start()
