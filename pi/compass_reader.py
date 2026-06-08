@@ -52,7 +52,7 @@ class CompassReader:
             self.sensor  = adafruit_bno055.BNO055_I2C(i2c)
 
             time.sleep(1.0)  # warmup — first read often returns None without this
-            print("BNO055 initialized — using internal calibration.")
+            print("BNO055 initialized — no offsets, self-calibrating dynamically.")
 
         except Exception as e:
             print(f"BNO055 init error: {e}")
@@ -95,12 +95,15 @@ class CompassReader:
         Read compass heading in degrees (0-360).
         0=North, 90=East, 180=South, 270=West.
         Returns None on error.
+        The BNO055 handles internal sensor fusion at 100Hz —
+        no additional smoothing needed.
         """
         if not self.sensor:
             return None
         try:
             heading = self.sensor.euler[0]
             if heading is None:
+                self._heading_history = []
                 return None
             return round(heading, 1)
         except Exception as e:

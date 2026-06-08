@@ -244,6 +244,7 @@ def compass_worker():
     Dedicated compass polling thread at 2Hz.
     Handles BNO055 recovery if sensor is knocked out of fusion mode
     by Picarx or Vilib initialization disturbing the I2C bus.
+    No calibration offsets are applied — BNO055 self-calibrates dynamically.
     """
     print("Compass worker started.")
     tick         = 0
@@ -262,27 +263,22 @@ def compass_worker():
                     none_streak += 1
                     state["compass_ok"] = False
 
-                    # After 10 consecutive None readings (~5 seconds),
-                    # reinitialize the BNO055 — it was knocked out of fusion mode
-                    if none_streak >= 10:
+                    # After 20 consecutive None readings (~10 seconds),
+                    # reinitialize the BNO055 — no offsets applied
+                    if none_streak >= 20:
                         print("Compass: BNO055 not responding, reinitializing...")
                         try:
                             import adafruit_bno055
                             import board
                             i2c = board.I2C()
                             compass.sensor = adafruit_bno055.BNO055_I2C(i2c)
-                            # Restore calibration offsets
-                            cal = compass._load_calibration()
-                            if cal:
-                                compass.sensor.offsets_magnetometer  = tuple(cal["mag_offsets"])
-                                compass.sensor.offsets_accelerometer = tuple(cal["accel_offsets"])
-                                compass.sensor.offsets_gyroscope     = tuple(cal["gyro_offsets"])
-                            print("Compass: BNO055 reinitialized.")
+                            # No calibration offsets — let BNO055 self-calibrate
+                            print("Compass: BNO055 reinitialized (no offsets).")
                             none_streak = 0
-                            time.sleep(1.0)  # wait for sensor to settle
+                            time.sleep(2.0)  # longer wait for sensor to settle
                         except Exception as re:
                             print(f"Compass: reinitialization failed: {re}")
-                            none_streak = 0  # reset to try again later
+                            none_streak = 0
 
         except Exception as e:
             print(f"Compass worker error: {e}")
