@@ -96,20 +96,6 @@ app.add_middleware(
 
 px = Picarx()
 
-# ── Compass ───────────────────────────────────────────────────────────────────
-# MUST initialize AFTER px = Picarx() — Picarx resets the I2C bus internally
-# which knocks the BNO055 out of fusion mode if initialized before Picarx.
-time.sleep(0.5)  # let I2C bus settle after Picarx init
-try:
-    from compass_reader import CompassReader
-    compass = CompassReader()
-    COMPASS_AVAILABLE = True
-    print("Compass initialized.")
-except Exception as e:
-    compass = None
-    COMPASS_AVAILABLE = False
-    print(f"Compass not available: {e}")
-
 # ── Sound ──────────────────────────────────────────────────────────────────────
 try:
     music = Music()
@@ -202,6 +188,20 @@ Vilib.display(local=False, web=True)
 time.sleep(5)
 print(f"Camera ready. Stream at http://{PI_IP}:{CAMERA_PORT}/mjpg")
 
+# ── Compass ───────────────────────────────────────────────────────────────────
+# MUST initialize AFTER camera start — Vilib.camera_start() disturbs the I2C
+# bus and knocks the BNO055 out of fusion mode if initialized before camera.
+time.sleep(0.5)  # let I2C bus settle after camera init
+try:
+    from compass_reader import CompassReader
+    compass = CompassReader()
+    COMPASS_AVAILABLE = True
+    print("Compass initialized.")
+except Exception as e:
+    compass = None
+    COMPASS_AVAILABLE = False
+    print(f"Compass not available: {e}")
+
 # ── Sensor polling thread (10Hz) ───────────────────────────────────────────────
 def sensor_worker():
     print("Sensor worker started.")
@@ -242,49 +242,21 @@ threading.Thread(target=sensor_worker, daemon=True).start()
 def compass_worker():
     """
     Dedicated compass polling thread at 2Hz.
-    Handles BNO055 recovery if sensor is knocked out of fusion mode
-    by Picarx or Vilib initialization disturbing the I2C bus.
-    No calibration offsets are applied — BNO055 self-calibrates dynamically.
+    No reinit — just wait out any None readings caused by I2C bus activity.
+    The BNO055 self-calibrates dynamically in NDOF mode.
     """
     print("Compass worker started.")
-    tick         = 0
-    none_streak  = 0
 
     while True:
         try:
             if compass is not None and compass.sensor is not None:
                 heading = compass.read_heading()
-
-                if heading is not None:
-                    state["compass_heading"] = heading
-                    state["compass_ok"]      = True
-                    none_streak              = 0
-                else:
-                    none_streak += 1
-                    state["compass_ok"] = False
-
-                    # After 20 consecutive None readings (~10 seconds),
-                    # reinitialize the BNO055 — no offsets applied
-                    if none_streak >= 20:
-                        print("Compass: BNO055 not responding, reinitializing...")
-                        try:
-                            import adafruit_bno055
-                            import board
-                            i2c = board.I2C()
-                            compass.sensor = adafruit_bno055.BNO055_I2C(i2c)
-                            # No calibration offsets — let BNO055 self-calibrate
-                            print("Compass: BNO055 reinitialized (no offsets).")
-                            none_streak = 0
-                            time.sleep(2.0)  # longer wait for sensor to settle
-                        except Exception as re:
-                            print(f"Compass: reinitialization failed: {re}")
-                            none_streak = 0
-
+                state["compass_heading"] = heading
+                state["compass_ok"]      = heading is not None
         except Exception as e:
             print(f"Compass worker error: {e}")
             state["compass_ok"] = False
 
-        tick += 1
         time.sleep(0.5)   # 2Hz
 
 threading.Thread(target=compass_worker, daemon=True).start()
