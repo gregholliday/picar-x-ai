@@ -101,21 +101,8 @@ class CompassReader:
         try:
             heading = self.sensor.euler[0]
             if heading is None:
-                # Clear history on None — don't let stale values corrupt future reads
-                self._heading_history = []
                 return None
-
-            # Smooth with circular rolling average (3 readings)
-            self._heading_history.append(heading)
-            if len(self._heading_history) > 3:
-                self._heading_history.pop(0)
-
-            sin_sum = sum(math.sin(math.radians(h)) for h in self._heading_history)
-            cos_sum = sum(math.cos(math.radians(h)) for h in self._heading_history)
-            smoothed = math.degrees(math.atan2(sin_sum, cos_sum)) % 360
-
-            return round(smoothed, 1)
-
+            return round(heading, 1)
         except Exception as e:
             print(f"Compass read error: {e}")
             return None
