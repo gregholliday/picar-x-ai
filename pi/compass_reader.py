@@ -51,20 +51,8 @@ class CompassReader:
             i2c          = board.I2C()
             self.sensor  = adafruit_bno055.BNO055_I2C(i2c)
 
-            # Try saved calibration file first
-            cal = self._load_calibration()
-            if cal:
-                self.sensor.offsets_magnetometer  = tuple(cal["mag_offsets"])
-                self.sensor.offsets_accelerometer = tuple(cal["accel_offsets"])
-                self.sensor.offsets_gyroscope     = tuple(cal["gyro_offsets"])
-                print("BNO055 initialized — calibration restored from file.")
-            else:
-                # Use hardcoded offsets from Adafruit calibration tool
-                # Generated: 2026-06-04, Anderson SC garage environment
-                self.sensor.offsets_magnetometer  = (48, 187, -6)
-                self.sensor.offsets_gyroscope     = (-2, -1, 3)
-                self.sensor.offsets_accelerometer = (5, -38, -19)
-                print("BNO055 initialized — using hardcoded calibration offsets.")
+            time.sleep(1.0)  # warmup — first read often returns None without this
+            print("BNO055 initialized — using internal calibration.")
 
         except Exception as e:
             print(f"BNO055 init error: {e}")
