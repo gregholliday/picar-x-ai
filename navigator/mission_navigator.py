@@ -151,18 +151,22 @@ def in_zone(current_world, zone):
 
         checked += 1
 
-        if z_val > 3000:
-            # Open space — current must also see open space
+        if z_val > 2000:
+            # Zone expects open space — current must also see open space
             if c_val > 2000:
                 matched += 1
-        elif c_val > 3000:
-            # Current sees open space but zone expects wall
-            pass  # no match
+            else:
+                # Current sees wall where zone expects open space — definite mismatch
+                return False
+        elif c_val > 2000:
+            # Current sees open space where zone expects wall — definite mismatch
+            return False
         else:
             if abs(z_val - c_val) < tol:
                 matched += 1
 
-    return checked >= 3 and matched >= 3
+    # Require ALL checked axes to match
+    return checked >= 3 and matched >= checked
 
 
 def in_zone_lidar_fallback(current_world, zone):
