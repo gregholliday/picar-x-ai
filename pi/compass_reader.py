@@ -32,8 +32,8 @@ except ImportError:
     print("Warning: adafruit-circuitpython-bno055 not installed.")
     print("Run: pip3 install adafruit-circuitpython-bno055 --break-system-packages")
 
-#CAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "compass_cal.json")
-CAL_FILE = "/mnt/ai-lab/picar-x-ai/pi/compass_cal.json"
+CAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "compass_cal.json")
+
 
 class CompassReader:
     def __init__(self):
@@ -51,7 +51,7 @@ class CompassReader:
             i2c          = board.I2C()
             self.sensor  = adafruit_bno055.BNO055_I2C(i2c)
 
-            # Restore saved calibration if available
+            # Try saved calibration file first
             cal = self._load_calibration()
             if cal:
                 self.sensor.offsets_magnetometer  = tuple(cal["mag_offsets"])
@@ -59,7 +59,12 @@ class CompassReader:
                 self.sensor.offsets_gyroscope     = tuple(cal["gyro_offsets"])
                 print("BNO055 initialized — calibration restored from file.")
             else:
-                print("BNO055 initialized — no saved calibration, move car to calibrate.")
+                # Use hardcoded offsets from Adafruit calibration tool
+                # Generated: 2026-06-04, Anderson SC garage environment
+                self.sensor.offsets_magnetometer  = (48, 187, -6)
+                self.sensor.offsets_gyroscope     = (-2, -1, 3)
+                self.sensor.offsets_accelerometer = (5, -38, -19)
+                print("BNO055 initialized — using hardcoded calibration offsets.")
 
         except Exception as e:
             print(f"BNO055 init error: {e}")
@@ -185,13 +190,10 @@ if __name__ == "__main__":
             h   = c.read_heading()
             r   = c.read_heading_raw()
             cal = c.calibration_status()
-            if h is not None and r is not None:
-                print(f"  Heading: {h:6.1f}°  Raw: {r:6.1f}°  "
-                      f"Dir: {c.cardinal(h):<2}  "
-                      f"Cal: sys={cal[0]} gyro={cal[1]} accel={cal[2]} mag={cal[3]}",
-                      end="\r", flush=True)
-            else:
-                print("  Waiting for heading...", end="\r", flush=True)
+            print(f"  Heading: {h:6.1f}°  Raw: {r:6.1f}°  "
+                  f"Dir: {c.cardinal(h):<2}  "
+                  f"Cal: sys={cal[0]} gyro={cal[1]} accel={cal[2]} mag={cal[3]}",
+                  end="\r", flush=True)
             time.sleep(0.1)
 
     except KeyboardInterrupt:
