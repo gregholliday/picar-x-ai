@@ -53,11 +53,11 @@ class CompassReader:
 
             # Hardcoded calibration offsets — captured 2026-06-08
             # Wires in permanent position on nav tower
-            self.sensor.offsets_magnetometer  = (156, 123, -11)
-            self.sensor.offsets_gyroscope     = (-1, -2, 2)
-            self.sensor.offsets_accelerometer = (-54, -98, -41)
-            time.sleep(1.0)  # warmup — first read often returns None without this
-            print("BNO055 initialized — offsets applied.")
+#            self.sensor.offsets_magnetometer  = (156, 123, -11)
+#            self.sensor.offsets_gyroscope     = (-1, -2, 2)
+#            self.sensor.offsets_accelerometer = (-54, -98, -41)
+#            time.sleep(1.0)  # warmup — first read often returns None without this
+            print("BNO055 initialized.")
 
         except Exception as e:
             print(f"BNO055 init error: {e}")

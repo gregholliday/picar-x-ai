@@ -48,8 +48,8 @@ class Mode:
 # sensor = adafruit_bno055.BNO055_UART(uart)
 
 # Instantiate I2C interface connection
-# i2c = board.I2C()  # For board.SCL and board.SDA
-i2c = board.STEMMA_I2C()  # For the built-in STEMMA QT connection
+i2c = board.I2C()  # For board.SCL and board.SDA
+#i2c = board.STEMMA_I2C()  # For the built-in STEMMA QT connection
 sensor = adafruit_bno055.BNO055_I2C(i2c)
 sensor.mode = Mode.NDOF_MODE  # Set the sensor to NDOF_MODE
 
