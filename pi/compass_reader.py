@@ -101,6 +101,8 @@ class CompassReader:
         try:
             heading = self.sensor.euler[0]
             if heading is None:
+                # Clear history on None — don't let stale values corrupt future reads
+                self._heading_history = []
                 return None
 
             # Smooth with circular rolling average (3 readings)
