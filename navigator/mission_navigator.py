@@ -35,15 +35,15 @@ LOG_DIR     = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 ZONES_FILE  = os.path.join(DATA_DIR, f"zones_{ENVIRONMENT}.json")
 
 # ── Navigation config ──────────────────────────────────────────────────────────
-DRIVE_SPEED         = 20
-TURN_SPEED          = 15
+DRIVE_SPEED         = 15
+TURN_SPEED          = 12
 POLL_HZ             = 10
 MAX_MISSION_TIME    = 300     # max seconds per zone leg
-ZONE_REACHED_MM     = 300     # world distance match tolerance
+ZONE_REACHED_MM     = 400     # world distance match tolerance
 HEADING_TOLERANCE   = 15      # degrees — acceptable heading error
-WALL_STOP_MM        = 400     # emergency stop distance
+WALL_STOP_MM        = 300     # emergency stop distance
 WALL_SLOW_MM        = 800     # slow down distance
-WALL_STEER_MM       = 350     # side wall steer distance
+WALL_STEER_MM       = 250     # side wall steer distance
 CORRECTION_ANGLE    = 15      # gentle correction steering angle
 TURN_ANGLE          = 30      # full turn angle
 
@@ -104,22 +104,47 @@ def heading_diff(current, target):
 def bearing_to_zone(current_world, zone_world):
     """
     Calculate the compass bearing to drive toward the target zone.
-    Compares current world position to zone world position.
-    Returns target heading in degrees.
+
+    World coordinates tell us distance to each wall.
+    To find relative position between current and target:
+      - If zone S < current S: zone is further from south wall = zone is north of us
+      - If zone N < current N: zone is further from north wall = zone is south of us
+      - If zone W < current W: zone is further from west wall  = zone is east of us
+      - If zone E < current E: zone is further from east wall  = zone is west of us
+
+    Use both N/S pair and E/W pair and average for robustness.
+    Skip open-space readings (>2000mm) as they are unreliable for position.
     """
-    # Determine offset in each world direction
-    # Positive = need to move in that direction
-    need_north = (zone_world.get("S", 0) or 0) - (current_world.get("S", 0) or 0)
-    need_east  = (zone_world.get("W", 0) or 0) - (current_world.get("W", 0) or 0)
+    # North/South component
+    # Larger S = closer to south wall = further north
+    # Zone S < current S means zone is further north of us → need_north positive
+    c_s = current_world.get("S", 0) or 0
+    z_s = zone_world.get("S", 0) or 0
+    c_n = current_world.get("N", 0) or 0
+    z_n = zone_world.get("N", 0) or 0
 
-    # If zone has smaller S reading, it's further north (need to go north)
-    # If zone has smaller W reading, it's further east (need to go east)
-    # We invert because smaller distance = closer to that wall = further in opposite direction
-    delta_n = (current_world.get("S", 0) or 0) - (zone_world.get("S", 0) or 0)
-    delta_e = (current_world.get("W", 0) or 0) - (zone_world.get("W", 0) or 0)
+    # East/West component
+    c_w = current_world.get("W", 0) or 0
+    z_w = zone_world.get("W", 0) or 0
+    c_e = current_world.get("E", 0) or 0
+    z_e = zone_world.get("E", 0) or 0
 
-    if abs(delta_n) < 200 and abs(delta_e) < 200:
-        return None  # Already close enough, no specific bearing needed
+    # Calculate N/S delta — use S wall if both are valid wall readings
+    delta_n = 0
+    if 0 < c_s < 2000 and 0 < z_s < 2000:
+        delta_n = c_s - z_s   # positive = zone is further from S wall = zone is north
+    elif 0 < c_n < 2000 and 0 < z_n < 2000:
+        delta_n = z_n - c_n   # positive = zone is further from N wall = zone is north
+
+    # Calculate E/W delta — use W wall if both are valid wall readings
+    delta_e = 0
+    if 0 < c_w < 2000 and 0 < z_w < 2000:
+        delta_e = c_w - z_w   # positive = zone is further from W wall = zone is east
+    elif 0 < c_e < 2000 and 0 < z_e < 2000:
+        delta_e = z_e - c_e   # positive = zone is further from E wall = zone is east
+
+    if abs(delta_n) < 150 and abs(delta_e) < 150:
+        return None  # Already close enough
 
     bearing = math.degrees(math.atan2(delta_e, delta_n)) % 360
     return round(bearing, 1)
@@ -315,13 +340,16 @@ def navigate_to_zone(zone_name, zone, compass_available):
         right = current_lidar["right_mm"]
 
         # ── Emergency wall stop ────────────────────────────────────────────────
-        if 0 < front < WALL_STOP_MM:
+        ultrasonic_cm = sensors.get("ultrasonic_cm", 0) or 0
+        obstacle_close = sensors.get("obstacle_close", False)
+
+        if (0 < front < WALL_STOP_MM) or (obstacle_close and 0 < ultrasonic_cm < 15):
             turn_dir = "left" if left > right else "right"
             angle    = -TURN_ANGLE if turn_dir == "left" else TURN_ANGLE
             drive(TURN_SPEED, angle)
             action = f"WALL_AVOID_{turn_dir.upper()}"
-            reason = f"Front wall {front:.0f}mm"
-            orient_done = False
+            reason = f"Front wall {front:.0f}mm ultrasonic={ultrasonic_cm:.0f}cm"
+            # Don't reset orient_done — keep heading reference after obstacle avoidance
 
         # ── Phase 1: Orient toward zone heading ────────────────────────────────
         elif not orient_done and heading is not None and zone_heading is not None:
@@ -352,27 +380,41 @@ def navigate_to_zone(zone_name, zone, compass_available):
                 action = "WALL_STEER_LEFT"
                 reason = f"Right wall {right:.0f}mm"
             else:
-                # Steer based on world position vs zone world position
-                if heading is not None and zone_world:
-                    target_bearing = bearing_to_zone(current_world, zone_world)
-                    if target_bearing is not None:
-                        hdiff = heading_diff(heading, target_bearing)
-                        if abs(hdiff) > HEADING_TOLERANCE:
-                            angle = CORRECTION_ANGLE if hdiff > 0 else -CORRECTION_ANGLE
-                            action = "STEER_TO_ZONE"
-                            reason = f"Bearing to zone: {target_bearing:.0f}° current: {heading:.1f}°"
-                        else:
-                            angle  = 0
-                            action = "DRIVE_TO_ZONE"
-                            reason = f"On course — bearing {target_bearing:.0f}°"
-                    else:
-                        angle  = 0
-                        action = "DRIVE_TO_ZONE"
-                        reason = "Close to zone — driving straight"
+                # Steer based on world coordinate deltas
+                # Compare current readings to zone targets on each valid axis
+                # to determine left/right correction needed
+                steer = 0
+                steer_reason = []
+
+                if zone_world:
+                    # Check each axis — if current reading differs from target,
+                    # steer to correct. Skip open-space readings (>2000mm).
+                    for direction, car_axis, steer_sign in [
+                        ("W", "right_mm", +1),   # Too little W → steer right (positive)
+                        ("E", "left_mm",  -1),   # Too little E → steer left (negative)
+                    ]:
+                        z_val = zone_world.get(direction, 0) or 0
+                        c_val = current_world.get(direction, 0) or 0
+
+                        # Skip open-space readings
+                        if z_val > 2000 or c_val > 2000:
+                            continue
+                        if z_val <= 0 or c_val <= 0:
+                            continue
+
+                        delta = z_val - c_val  # positive = need more distance on this side
+                        if abs(delta) > 200:
+                            steer += steer_sign * CORRECTION_ANGLE
+                            steer_reason.append(f"{direction}:{c_val:.0f}→{z_val:.0f}")
+
+                if steer != 0:
+                    angle  = max(-CORRECTION_ANGLE, min(CORRECTION_ANGLE, steer))
+                    action = "STEER_TO_ZONE"
+                    reason = f"Correcting: {', '.join(steer_reason)}"
                 else:
                     angle  = 0
                     action = "DRIVE_TO_ZONE"
-                    reason = "No compass — driving straight"
+                    reason = "Driving straight to zone"
 
             spd = DRIVE_SPEED if front == 0 or front > WALL_SLOW_MM else max(TURN_SPEED, int(DRIVE_SPEED * (front / WALL_SLOW_MM)))
             drive(spd, angle)
@@ -462,28 +504,33 @@ def main(targets, env=None):
     }
 
     all_reached = True
-    for target in targets:
-        zone    = zones[target.upper()]
-        reached, entries = navigate_to_zone(target.upper(), zone, compass_ok)
+    try:
+        for target in targets:
+            zone    = zones[target.upper()]
+            reached, entries = navigate_to_zone(target.upper(), zone, compass_ok)
 
-        mission_log["legs"].append({
-            "target":   target.upper(),
-            "reached":  reached,
-            "entries":  entries,
-            "duration": entries[-1]["elapsed"] if entries else 0,
-        })
+            mission_log["legs"].append({
+                "target":   target.upper(),
+                "reached":  reached,
+                "entries":  entries,
+                "duration": entries[-1]["elapsed"] if entries else 0,
+            })
 
-        if not reached:
-            all_reached = False
-            print(f"\nMission aborted — could not reach Zone {target}.")
-            break
+            if not reached:
+                all_reached = False
+                print(f"\nMission aborted — could not reach Zone {target}.")
+                break
 
-        if target != targets[-1]:
-            print(f"\nPausing 2 seconds before next leg...")
-            time.sleep(2)
+            if target != targets[-1]:
+                print(f"\nPausing 2 seconds before next leg...")
+                time.sleep(2)
 
-    stop()
-    set_mode("manual")
+    except KeyboardInterrupt:
+        print("\nMission interrupted by user.")
+        all_reached = False
+    finally:
+        stop()
+        set_mode("manual")
 
     total = round(time.time() - mission_start, 1)
     reached_zones = [l["target"] for l in mission_log["legs"] if l["reached"]]
